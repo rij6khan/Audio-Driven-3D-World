@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Audio World — Procedural Landscape</title>
+  </head>
+  <body>
+    <div id="app">
+      <div id="hud">
+        <div class="eyebrow">PROCEDURAL AUDIO LANDSCAPE</div>
+        <h1>Audio World</h1>
+        <p class="subtitle">A landscape shaped by a simulated sound recording</p>
+        <div class="stats">
+          <div><span class="stat-label">AUDIO TIME</span><strong id="time">00:00</strong></div>
+          <div><span class="stat-label">ENERGY</span><strong id="energy">0.00</strong></div>
+        </div>
+        <div class="controls">
+          <button id="play-pause">Pause journey</button>
+        </div>
+        <div class="legend">
+          <div><span class="dot quiet"></span> Quiet audio: low terrain</div>
+          <div><span class="dot loud"></span> Loud audio: higher terrain</div>
+          <div><span class="dot road"></span> Pitch/energy variation: road bends</div>
+        </div>
+      </div>
+      <div id="help">Move: <b>WASD</b> or <b>↑ ↓ ← →</b> · Reset view: <b>R</b></div>
+      <div id="loading">Generating your world…</div>
+    </div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
