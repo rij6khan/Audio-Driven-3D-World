@@ -68,4 +68,4 @@ Keep the object shape above if possible. If your teammate outputs a differently 
 
 ## Notes
 
-This is a starter implementation, not a production-optimized open world. The terrain is generated as one mesh, and scenery is intentionally simple. For a stronger final demo, consider chunking very large worlds, adding a road shoulder/edge line, improving collision and camera handling, and adding real audio playback synchronized to the world position.
+This is a starter implementation, not a production-optimized open world. The terrain is generated as one mesh, and scenery is intentionally simple.
