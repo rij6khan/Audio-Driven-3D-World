@@ -86,6 +86,9 @@ function buildWorld() {
   loading.classList.add('hidden');
 }
 
+let cAngleX = 0;
+let cAngleY = 0;
+
 function updateCamera(dt) {
   const forward = (keys.has('w') || keys.has('arrowup') ? 1 : 0) - (keys.has('s') || keys.has('arrowdown') ? 1 : 0);
   const sideways = (keys.has('a') || keys.has('arrowright') ? 1 : 0) - (keys.has('d') || keys.has('arrowleft') ? 1 : 0);
@@ -100,7 +103,19 @@ function updateCamera(dt) {
   const target = new THREE.Vector3(aheadX, terrainInfo.getHeight(aheadX, aheadZ) + 2.2, aheadZ);
   const desired = new THREE.Vector3(playerX, ground + 2.0, playerZ - 9);
   camera.position.lerp(desired, 1 - Math.exp(-dt * 3.2));
+  const sensitivity = 0.5;
+  cAngleY -= mdX * sensitivity * dt;
+  cAngleX -= mdY * sensitivity * dt;
+
+  const maxPitch = Math.PI / 2 - 0.01;
+  cAngleX = Math.max(-maxPitch, Math.min(maxPitch, cAngleX));
+
+  mdX = 0;
+  mdY = 0;
+  
   camera.lookAt(target);
+  camera.rotateY(cAngleY);
+  camera.rotateX(cAngleX);
 }
 
 playButton.addEventListener('click', () => {
@@ -114,6 +129,8 @@ window.addEventListener('keydown', event => {
   if (key === 'r') {
     playerZ = 3;
     playerX = roadCenterX(playerZ, features, seed);
+    cAngleX = 0;
+    cAngleY = 0;
   }
 });
 window.addEventListener('keyup', event => keys.delete(event.key.toLowerCase()));
@@ -123,6 +140,28 @@ window.addEventListener('resize', () => {
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
 });
+
+let isDragging = false;
+let previousMousePosition = {x:0, y:0};
+let mdX = 0;
+let mdY = 0;
+
+renderer.domElement.addEventListener('mousedown', (e) => {
+  isDragging = true;
+  previousMousePosition = {x: e.clientX, y: e.clientY};
+});
+window.addEventListener('mousemove', (e) => {
+  if(!isDragging) return;
+
+  mdX += e.clientX - previousMousePosition.x;
+  mdY += e.clientY - previousMousePosition.y;
+
+  previousMousePosition = {x: e.clientX, y: e.clientY};
+});
+
+window.addEventListener('mouseup', () => {
+  isDragging = false;
+})
 
 function animate() {
   requestAnimationFrame(animate);
