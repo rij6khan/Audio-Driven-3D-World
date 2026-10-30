@@ -11,7 +11,7 @@ const ROCK_ATTEMPTS = 300;
 
 // `parent` is the object everything is added to (pass the world group, so clearWorld() removes it).
 // `biomeAt(x, z)` comes from createTerrain and says which biomes (and how much water) are at a spot.
-export function createScenery({ scene: parent, getTerrainHeight, biomeAt, features, seed }) {
+export function createScenery({ scene: parent, getTerrainHeight, biomeAt, biomeMap, features, seed }) {
   const rng = seededRandom(seed + 717);
   const noise = createNoise(seed + 11);
   const scale = WORLD.length / 620;
@@ -124,12 +124,39 @@ export function createScenery({ scene: parent, getTerrainHeight, biomeAt, featur
     if (info.water > 0.03) continue; // no trees in water or on the wet shore
     const biome = BIOMES[pickBiome(info.weights)];
     const spec = biome.tree;
+    if (spec.maxHeight && info.height > spec.maxHeight) continue; // no trees above the tree line
     const roll = rng(), colorRoll = rng(), sizeRoll = rng(), spin = rng();
     const busy = busyAt(z);
-    if (!spec || roll > spec.density * crowdAt(x, z, busy)) continue;
+    if (!spec || roll > spec.density * (spec.dense ? Math.max(1, crowdAt(x, z, busy)) : crowdAt(x, z, busy))) continue;
     const size = (spec.size[0] + spec.size[1]) / 2 + (sizeRoll - 0.5) * (spec.size[1] - spec.size[0]) * (0.35 + 0.65 * busy);
     const hex = spec.colors[Math.floor(colorRoll * Math.max(1, Math.ceil(spec.colors.length * (0.4 + 0.6 * busy))))];
     shapes[spec.shape](x, info.height, z, size, hex, spin);
+  }
+
+  // A rainforest is so thick the sky is mostly hidden. On purpose, it gets many times the trees of any other biome, all of
+  // them tall, plus a leafy ceiling over the road, so little light gets through (see `dense` in BiomeGenerator).
+  const denseIndex = BIOMES.findIndex(b => b.tree.dense);
+  if (biomeMap && biomeMap.parts.some(part => BIOMES[part.biome].tree.dense)) {
+    const attempts = Math.min(16000, 5 * treeAttempts);
+    for (let i = 0; i < attempts; i++) {
+      const z = 8 + rng() * (WORLD.length - 16);
+      const x = (rng() - 0.5) * (WORLD.width - 12);
+      if (Math.abs(x - roadCenterX(z, features, seed)) < WORLD.roadWidth * 1.6) continue;
+      const info = biomeAt(x, z);
+      const spec = BIOMES[info.dominant].tree;
+      if (!spec.dense || info.water > 0.03) continue;
+      const size = spec.size[0] + (spec.size[1] - spec.size[0]) * rng();
+      shapes[spec.shape](x, info.height, z, size, spec.colors[Math.floor(rng() * spec.colors.length)], rng());
+    }
+    const leaf = colored(BIOMES[denseIndex].tree.colors[2]);
+    for (let z = 6; z < WORLD.length - 6; z += 8) {
+      const roadX = roadCenterX(z, features, seed);
+      const info = biomeAt(roadX, z);
+      if (!BIOMES[info.dominant].tree.dense || rng() > 0.92) continue;
+      // wide, flat clumps of leaves high above the road (above the driver's eye line), overlapping into a canopy
+      addPart(trees, sphereGeometry, leaf, roadX + (rng() - 0.5) * 10, info.height + 11 + rng() * 5, z + (rng() - 0.5) * 3,
+        8 + rng() * 4, 2.2 + rng(), 7 + rng() * 4);
+    }
   }
 
   for (let i = 0; i < rockAttempts; i++) {

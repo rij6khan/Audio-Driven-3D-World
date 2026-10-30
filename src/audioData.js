@@ -23,7 +23,7 @@ export const SPECTRUM_HIGH_HZ = 16000;     // lossy files (mp3/aac) often have n
 const ANALYSIS_RATE = 44100;  // 44.1 kHz so there is real signal above 8 kHz to analyze
 const FFT_SIZE = 4096;        // ~93 ms window at 44.1 kHz
 const BAND_HOP = 2048;        // spacing of FFT frames averaged inside each output sample
-const SPECTRUM_DB_RANGE = 80; // dB below the track's loudest moment that maps to 0
+export const SPECTRUM_DB_RANGE = 80; // dB below the track's loudest moment that maps to 0
 
 /* ------------------------------------------------------------------------- *
  * Demo data
@@ -64,9 +64,14 @@ export function makeFakeAudioFeatures(seed = 1, duration = 48, sampleRate = 0.25
       spectrum.push(round4(clamp(tilt + 0.14 * waveA + 0.12 * waveB + 0.2 * (volume - 0.5) + lowBeat, 0, 1)));
     }
     const relief = 3 + Math.pow(volume, 1.55) * 23; // the demo's hill height, exactly as the terrain used to compute it
-    samples.push({ time, volume, pitch, energy, spectrum, relief, complexity: energy });
+    // Alternating prominence: the melody is clearest when the rhythm is faint, and the other way round.
+    const swing = 0.5 + 0.5 * Math.sin(time * 0.13 + seed);
+    samples.push({ time, volume, pitch, energy, spectrum, relief, complexity: energy, tonality: swing, pulse: 1 - swing });
   }
-  return { duration, samples };
+  // A steady 100 BPM pulse (the demo's pace), with a strong-weak-medium-weak accent pattern.
+  const beats = { time: [], strength: [] };
+  for (let k = 0; k * 0.6 < duration; k++) { beats.time.push(k * 0.6); beats.strength.push([1, 0.5, 0.8, 0.5][k % 4]); }
+  return { duration, samples, beats };
 }
 
 export function sampleAudioFeatures(features, time) {
@@ -85,10 +90,19 @@ export function sampleAudioFeatures(features, time) {
   const span = b.time - a.time;
   const f = span > 0 ? (t - a.time) / span : 0;
 
+  // A cubic curve through four neighboring samples: it has no corners at the samples, which keeps the road's bends smooth.
+  const smooth = key => {
+    const p0 = samples[Math.max(0, low - 2)][key] ?? 0.5, p1 = a[key] ?? 0.5, p2 = b[key] ?? 0.5, p3 = samples[Math.min(samples.length - 1, low + 1)][key] ?? 0.5;
+    return 0.5 * (2 * p1 + (p2 - p0) * f + (2 * p0 - 5 * p1 + 4 * p2 - p3) * f * f + (3 * p1 - p0 - 3 * p2 + p3) * f * f * f);
+  };
+
   return {
     volume: lerp(a.volume, b.volume, f),
-    pitch: lerp(a.pitch, b.pitch, f),
-    energy: lerp(a.energy, b.energy, f),
+    pitch: smooth('pitch'),
+    energy: smooth('energy'),
+    // How prominent the melody and the rhythm are here (0..1); set by FeatureShaper, they steer the road.
+    melodySay: smooth('melodySay'),
+    rhythmSay: smooth('rhythmSay'),
     // How busy the music is (0..1); features without it fall back to energy.
     complexity: lerp(a.complexity ?? a.energy, b.complexity ?? b.energy, f),
     // Hill height in world units. Features that haven't been shaped yet fall back to the original volume formula.
@@ -160,59 +174,62 @@ export function analyzeSignal(signal, sampleRate, sampleInterval = 0.25) {
   // Stage A: measure each time slice (same time grid as makeFakeAudioFeatures).
   const times = [];
   const loudnessDb = [];
-  const frequencyHz = [];
   const bandPower = [];
-  let lastFrequency = 0;
   for (let i = 0; i <= count; i++) {
     const time = Math.min(i * sampleInterval, duration);
     const start = Math.max(0, Math.floor((time - sampleInterval / 2) * sampleRate));
     const end = Math.min(signal.length, Math.ceil((time + sampleInterval / 2) * sampleRate));
-    const { rms, crossings } = measureWindow(signal, start, end);
-
-    const windowSeconds = (end - start) / sampleRate;
-    const isSilent = rms < 0.001 || windowSeconds <= 0;
-    // A pure tone crosses zero twice per cycle, so crossings / 2 / seconds ~ frequency in Hz.
-    // In silence the count is just noise, so hold the previous value instead.
-    const frequency = isSilent ? lastFrequency : crossings / 2 / windowSeconds;
-    lastFrequency = frequency;
-
     times.push(time);
-    loudnessDb.push(Math.max(-60, 20 * Math.log10(rms + 1e-6))); // floor at -60 dB so silence doesn't stretch the scale
-    frequencyHz.push(frequency);
+    loudnessDb.push(Math.max(-60, 20 * Math.log10(windowRms(signal, start, end) + 1e-6))); // floor at -60 dB so silence doesn't stretch the scale
     bandPower.push(averageBandPower(signal, start, end, bandContext));
   }
 
   // Stage B: derive the contract features, then rescale each to 0..1 across the track.
   const volume = normalize(loudnessDb);
-  const pitch = normalize(frequencyHz.map(f => Math.log2(Math.max(f, 20)))); // log: octaves are equal steps
   // "Change" = how much louder than the previous slice. A rise is what makes beats and accents feel energetic.
   const rise = loudnessDb.map((db, i) => (i === 0 ? 0 : Math.max(0, db - loudnessDb[i - 1])));
   const accent = normalize(rise);
   const energy = volume.map((v, i) => clamp(0.7 * v + 0.3 * accent[i], 0, 1));
   const spectrum = bandPowerToUnitRange(bandPower);
 
-  // Rhythm: the tempo as it changes through the song (null when it can't be told).
+  // Melody: the register of the sound (where the middle of the melody range sits, 0 = low .. 1 = high; octaves count
+  // equally) and how clearly one band stands out (a clear melodic line versus a wash of sound).
+  let lastPosition = 0.5;
+  const melody = spectrum.map((row, i) => {
+    if (loudnessDb[i] < -50) return { position: lastPosition, tonality: 0 };
+    const shape = melodyShape(row);
+    lastPosition = shape.position;
+    return shape;
+  });
+  const pitch = normalize(melody.map(m => m.position));
+
+  // Rhythm: the tempo as it changes through the song, how clearly the beat repeats, and where the beats fall.
+  // A file with no clear tempo (speech, noise, ambient washes) gets none of these, and is driven at the default pace.
   const onsets = computeOnsetEnvelope(signal, sampleRate);
-  const tempo = estimateTempoTrack(onsets.envelope, onsets.fps, duration, times);
+  const pulses = onsetPulses(onsets.envelope, onsets.fps);
+  const rhythm = estimateTempoTrack(pulses, onsets.fps, duration, times);
+  const tempoAt = t => rhythm.tempo[Math.min(times.length - 1, Math.round(t / sampleInterval))];
 
   const samples = times.map((time, i) => {
     const sample = { time, volume: volume[i], pitch: pitch[i], energy: energy[i], spectrum: spectrum[i], loudness: Math.round(loudnessDb[i] * 100) / 100 };
     sample.complexity = Math.round(spectralOccupancy(spectrum[i], loudnessDb[i]) * 1000) / 1000;
-    if (tempo) sample.tempo = Math.round(tempo[i] * 10) / 10;
+    sample.tonality = Math.round(melody[i].tonality * 1000) / 1000;
+    sample.pulse = rhythm ? Math.round(rhythm.pulse[i] * 1000) / 1000 : 0;
+    if (rhythm) sample.tempo = Math.round(rhythm.tempo[i] * 10) / 10;
     return sample;
   });
-  return { duration, samples };
+  const result = { duration, samples };
+  if (rhythm) {
+    const beats = trackBeats(pulses, onsets.fps, duration, tempoAt);
+    result.beats = { time: beats.map(b => Math.round(b.time * 1000) / 1000), strength: beats.map(b => Math.round(b.strength * 1000) / 1000) };
+  }
+  return result;
 }
 
-function measureWindow(signal, start, end) {
+function windowRms(signal, start, end) {
   let sumSquares = 0;
-  let crossings = 0;
-  for (let i = start; i < end; i++) {
-    sumSquares += signal[i] * signal[i];
-    if (i > start && (signal[i] < 0) !== (signal[i - 1] < 0)) crossings++;
-  }
-  const n = end - start;
-  return { rms: n > 0 ? Math.sqrt(sumSquares / n) : 0, crossings };
+  for (let i = start; i < end; i++) sumSquares += signal[i] * signal[i];
+  return end > start ? Math.sqrt(sumSquares / (end - start)) : 0;
 }
 
 // Rescale so the 5th..95th percentile of the track spans 0..1. Percentiles (instead of min/max)
@@ -330,6 +347,8 @@ const ONSET_BANDS = 24;
 const TEMPO_RANGE = [70, 160]; // BPM. Narrow enough that half/double-time can rarely both fit, so no folding is needed.
 const TEMPO_WINDOW = 8;       // seconds of music examined per estimate
 const TEMPO_STEP = 1;         // seconds between estimates
+const MIN_ONSET_LEVEL = 0.25; // average dB of new sound per band per frame below which a held tone or drone has no onsets at all
+const MIN_CLEAR_SHARE = 0.5;  // a file has a tempo only if at least this share of it has a clear beat
 const MIN_PULSE = 0.3;        // how strongly the beat must repeat to count; steadier than this is a beat, less is just texture
 
 // "How much new sound just started?" at ~86 frames per second: the sum of increases in each frequency band.
@@ -366,15 +385,9 @@ function computeOnsetEnvelope(signal, sampleRate) {
   return { envelope, fps };
 }
 
-// Tempo (BPM) at each of `times`, or `null` if the audio is too short to tell.
-// A steady beat makes the onset envelope repeat every beat-length, which shows up as a peak when the envelope is
-// compared with a delayed copy of itself. For each stretch of music, the strongest such delay in range is the beat.
-function estimateTempoTrack(envelope, fps, duration, times) {
-  const total = envelope.length;
-  const window = Math.min(total, Math.round(TEMPO_WINDOW * fps));
-  if (total < fps * 4) return null;
-  // Keep only the pulses: subtract a ~0.8 s moving average so slow swells don't look like rhythm.
-  const half = Math.round(0.4 * fps);
+// Keep only the pulses of an onset envelope: subtract a ~0.8 s moving average so slow swells don't look like rhythm.
+function onsetPulses(envelope, fps) {
+  const total = envelope.length, half = Math.round(0.4 * fps);
   const prefix = new Float64Array(total + 1);
   for (let i = 0; i < total; i++) prefix[i + 1] = prefix[i] + envelope[i];
   const pulses = new Float32Array(total);
@@ -382,39 +395,87 @@ function estimateTempoTrack(envelope, fps, duration, times) {
     const lo = Math.max(0, i - half), hi = Math.min(total, i + half + 1);
     pulses[i] = Math.max(0, envelope[i] - (prefix[hi] - prefix[lo]) / (hi - lo));
   }
-  envelope = pulses;
+  return pulses;
+}
+
+// Tempo (BPM) and pulse clarity (0..1) at each of `times`, or null if the file has no clear tempo.
+// A steady beat makes the pulses repeat every beat-length, which shows up as a peak when they are compared with a
+// delayed copy of themselves. For each stretch of music, the strongest such delay in range is the beat. A file only
+// counts as having a tempo if MOST of it has a clear beat; speech, noise and ambient washes don't, and are left alone.
+function estimateTempoTrack(pulses, fps, duration, times) {
+  const total = pulses.length;
+  const window = Math.min(total, Math.round(TEMPO_WINDOW * fps));
+  if (total < fps * 4) return null;
   const lagMin = Math.floor((fps * 60) / TEMPO_RANGE[1]);
   const lagMax = Math.ceil((fps * 60) / TEMPO_RANGE[0]);
 
   const steps = Math.floor(duration / TEMPO_STEP) + 1;
   const logBpm = new Array(steps).fill(NaN);
+  const clarity = new Array(steps).fill(0);
   for (let k = 0; k < steps; k++) {
     const start = Math.max(0, Math.min(total - window, Math.round(k * TEMPO_STEP * fps - window / 2)));
     let mean = 0;
-    for (let i = start; i < start + window; i++) mean += envelope[i];
+    for (let i = start; i < start + window; i++) mean += pulses[i];
     mean /= window;
     let variance = 0;
-    for (let i = start; i < start + window; i++) variance += (envelope[i] - mean) ** 2;
+    for (let i = start; i < start + window; i++) variance += (pulses[i] - mean) ** 2;
     variance /= window;
+    if (variance < 1e-9 || mean < MIN_ONSET_LEVEL) continue; // silence, or only held sound: no onsets to keep time with
     let best = 0, bestR = 0;
     for (let lag = lagMin; lag <= lagMax; lag++) {
       let r = 0;
-      for (let i = start; i + lag < start + window; i++) r += (envelope[i] - mean) * (envelope[i + lag] - mean);
+      for (let i = start; i + lag < start + window; i++) r += (pulses[i] - mean) * (pulses[i + lag] - mean);
       r /= (window - lag) * variance;                                              // 1 = perfectly repeating, 0 = no pattern
       if (r > bestR) { bestR = r; best = lag; }
     }
+    clarity[k] = Math.min(1, bestR);
     if (best && bestR >= MIN_PULSE) logBpm[k] = Math.log2((fps * 60) / best);
   }
-  // Silent or beatless stretches have no answer: carry the nearest answer across them.
+  if (logBpm.filter(v => !Number.isNaN(v)).length < MIN_CLEAR_SHARE * steps) return null; // no clear tempo: use the default pace
+
+  // The occasional stretch without a clear beat borrows the nearest answer.
   let last = logBpm.find(v => !Number.isNaN(v));
-  if (last === undefined) return null;
   for (let k = 0; k < steps; k++) { if (Number.isNaN(logBpm[k])) logBpm[k] = last; else last = logBpm[k]; }
 
-  const smooth = gaussianSmoothArray(logBpm, 2); // ~2 s: the tempo may change, but the speed shouldn't jolt
-  return Float64Array.from(times, t => {
-    const p = Math.min(steps - 1, t / TEMPO_STEP), i = Math.floor(p), f = p - i;
-    return Math.pow(2, smooth[i] * (1 - f) + smooth[Math.min(steps - 1, i + 1)] * f);
+  const smoothBpm = gaussianSmoothArray(logBpm, 2); // ~2 s: the tempo may change, but the speed shouldn't jolt
+  const smoothClarity = gaussianSmoothArray(clarity, 2);
+  const at = (arr, t) => { const p = Math.min(steps - 1, t / TEMPO_STEP), i = Math.floor(p), f = p - i; return arr[i] * (1 - f) + arr[Math.min(steps - 1, i + 1)] * f; };
+  return { tempo: Float64Array.from(times, t => Math.pow(2, at(smoothBpm, t))), pulse: Float64Array.from(times, t => at(smoothClarity, t)) };
+}
+
+// Follow the beat through the song: each beat is expected one tempo-period after the last, then nudged toward the
+// strongest onset nearby, so the beats stay on the music's real hits even as the tempo drifts.
+function trackBeats(pulses, fps, duration, tempoAt) {
+  const at = t => pulses[Math.min(pulses.length - 1, Math.max(0, Math.round(t * fps)))];
+  const strongest = (from, to) => {
+    let best = Math.max(0, from), value = -1;
+    for (let t = Math.max(0, from); t <= to; t += 1 / fps) if (at(t) > value) { value = at(t); best = t; }
+    return best;
+  };
+  const beats = [];
+  let t = strongest(0, 60 / tempoAt(0));
+  while (t < duration) {
+    beats.push({ time: t, strength: at(strongest(t - 0.06, t + 0.06)) });
+    const period = 60 / tempoAt(t), expected = t + period;
+    t = expected + 0.5 * (strongest(expected - 0.2 * period, expected + 0.2 * period) - expected);
+  }
+  return beats;
+}
+
+// The melody range (about 200 Hz to 4 kHz): where the middle of the sound sits in it (0 = low, 1 = high), and how many
+// dB the strongest band stands above the average band (a clear melodic line stands out; a wash of sound does not).
+const MID_BANDS = Array.from({ length: SPECTRUM_BANDS }, (_, b) => b).filter(b => {
+  const hz = bandAxisToHz((b + 1) / (SPECTRUM_BANDS + 1));
+  return hz >= 200 && hz <= 4000;
+});
+function melodyShape(spectrum) {
+  let sum = 0, weighted = 0, peak = 0;
+  MID_BANDS.forEach((b, k) => {
+    const power = Math.pow(10, (spectrum[b] - 1) * (SPECTRUM_DB_RANGE / 10)); // the spectrum is 0..1 over an 80 dB range
+    sum += power; weighted += power * k; peak = Math.max(peak, power);
   });
+  if (sum <= 0) return { position: 0.5, tonality: 0 };
+  return { position: weighted / sum / (MID_BANDS.length - 1), tonality: clamp((10 * Math.log10((peak * MID_BANDS.length) / sum)) / 12, 0, 1) };
 }
 
 // How much of the frequency range is in use: the share of bands within ACTIVE_DB of the loudest band.

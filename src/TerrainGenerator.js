@@ -15,6 +15,11 @@ const WATER = {
   minVisible: 0.08,      // a vertex counts as "wet" once its water amount passes this
 };
 
+// Mountains are hard-coded on purpose: ridged, multi-octave noise gives sharp crests and valleys. They are flat-free at
+// the roadbed's edge and get taller, steeper and more jagged the further from the road (full strength by `full`), so the
+// road stays drivable while the horizon is plainly mountainous. The audio's energy only scales the height.
+const MOUNTAIN_SHAPE = { start: 24, full: 90, height: 85, baseFreq: 0.011, octaves: 5, lacunarity: 2.2 };
+
 // The ground is graded to meet the road: level with the road out to `flat`, then blending back to the natural ground by `far`.
 const ROADBED = { flat: 6.5, far: 22 };
 
@@ -27,12 +32,39 @@ export function createTerrain({ features, seed }) {
   const rows = nz + 1;
   const vertexCount = cols * rows;
 
-  // The natural ground: the audio sets the broad hills (`relief`, from FeatureShaper); noise makes them natural.
+  // Where the road is at height z (remembered, since a whole row of ground points asks about the same z).
+  let memoZ = NaN, memoX = 0;
+  const roadXAt = z => { if (z !== memoZ) { memoZ = z; memoX = roadCenterX(z, features, seed); } return memoX; };
+
+  // Peak height of the mountains at (x, z), `d` units from the road.
+  function peaks(x, z, d, energy) {
+    const reach = smoothstep(MOUNTAIN_SHAPE.start, MOUNTAIN_SHAPE.full, d);
+    if (reach <= 0) return 0;
+    const gain = 0.4 + 0.25 * reach; // each finer octave adds more detail the further out: the jaggedness grows with distance
+    let sum = 0, amp = 0.5, freq = MOUNTAIN_SHAPE.baseFreq, weight = 1;
+    for (let o = 0; o < MOUNTAIN_SHAPE.octaves; o++) {
+      let n = 1 - Math.abs(noise(x * freq + o * 17.3, z * freq + o * 31.7)); // a sharp crest wherever the noise crosses zero
+      n *= n * weight;                                                        // sharper still, with fine detail only on the crests
+      weight = Math.min(1, Math.max(0, n * 2));
+      sum += n * amp;
+      amp *= gain;
+      freq *= MOUNTAIN_SHAPE.lacunarity;
+    }
+    return reach * MOUNTAIN_SHAPE.height * (0.55 + 0.45 * energy) * sum;
+  }
+
+  // The natural ground: the audio sets the broad hills (`relief`, from FeatureShaper); noise makes them natural; and in
+  // a mountain biome, peaks rise away from the road.
   function naturalHeight(x, z) {
     const audio = sampleAudioFeatures(features, timeAtZ(features, z));
     const rolling = noise(x * 0.016 + seed, z * 0.012) * (1.5 + audio.energy * 2);
     const detail = noise(x * 0.04, z * 0.035 + seed) * 0.65;
-    return audio.relief + rolling + detail;
+    let height = audio.relief + rolling + detail;
+    if (biomeMap.hasMountains) {
+      const mountainous = biomeMap.mountainAt(z);
+      if (mountainous > 0) height += mountainous * peaks(x, z, Math.abs(x - roadXAt(z)), audio.energy);
+    }
+    return height;
   }
 
   // The road, and the ground graded to meet it: level with the road surface beside it, easing back to the natural
@@ -69,7 +101,8 @@ export function createTerrain({ features, seed }) {
   // "Flat" is judged against this song's own terrain, so every track gets some flat ground for water.
   const sortedSlopes = Float32Array.from(slopes).sort();
   const slopePct = p => sortedSlopes[Math.floor(p * (sortedSlopes.length - 1))];
-  const flatLo = slopePct(0.45), flatHi = Math.max(slopePct(0.8), flatLo + 1e-4);
+  // (and never counted as flat beyond these slopes, so steep mountainsides can't hold a lake)
+  const flatLo = Math.min(slopePct(0.45), 0.3), flatHi = Math.min(Math.max(slopePct(0.8), flatLo + 1e-4), 0.6);
 
   function slopeAt(x, z) {
     const d = 1.4;
@@ -150,7 +183,7 @@ export function createTerrain({ features, seed }) {
       positions[i * 3] = x; positions[i * 3 + 1] = y; positions[i * 3 + 2] = z;
 
       // Ground color: the biome's palette (blended only where one piece of a compilation hands over to the next).
-      const h01 = THREE.MathUtils.clamp((y - 1) / 30, 0, 1);
+      const h01 = THREE.MathUtils.clamp((y - 1) / 45, 0, 1);
       accum[0] = accum[1] = accum[2] = 0;
       for (let b = 0; b < BIOMES.length; b++) {
         const w = weights[b];

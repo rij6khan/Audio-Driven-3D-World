@@ -53,3 +53,6 @@ button.locked:hover { transform: none; background: rgba(255,255,255,.13); }
 #biome-badge .badge-label { font-size: 10px; letter-spacing: .19em; font-weight: 700; text-transform: uppercase; color: #a9d8bb; }
 #biome-badge strong { font-family: 'Space Grotesk', sans-serif; font-size: 15px; font-weight: 600; }
 @media (max-width: 560px) { #biome-badge { top: auto; bottom: 62px; left: 10px; right: auto; padding: 9px 13px; } }
+
+/* The audio file's name in the HUD: one line, with an ellipsis if it is too long (the full name shows on hover). */
+#audio-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; font-weight: 500; }

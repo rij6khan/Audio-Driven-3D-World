@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { makeFakeAudioFeatures, sampleAudioFeatures, analyzeAudioFile, isSilentAt } from './audioData.js';
 import { createTerrain } from './TerrainGenerator.js';
-import { createRoad, roadCenterX, roadHalfWidthX, setWorldLength, WORLD } from './RoadGenerator.js';
+import { createRoad, roadCenterX, setWorldLength, WORLD } from './RoadGenerator.js';
 import { createScenery } from './PropGenerator.js';
 import { BIOMES, MOUNTAIN, blendBiomeColor, blendBiomeWeather, biomeCss } from './BiomeGenerator.js';
 import { createWeather } from './Weather.js';
@@ -29,7 +29,8 @@ renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.12;
 app.prepend(renderer.domElement);
 
-scene.add(new THREE.HemisphereLight(0xe7f4ff, 0x65714e, 2.0));
+const hemisphere = new THREE.HemisphereLight(0xe7f4ff, 0x65714e, 2.0);
+scene.add(hemisphere);
 const sun = new THREE.DirectionalLight(0xffe2b5, 3.0);
 sun.position.set(-70, 120, 40);
 sun.castShadow = true;
@@ -64,6 +65,28 @@ function setBadge(label, name, color) {
   badge.style.setProperty('--biome-color', color);
 }
 
+// The current audio file's name, as a full-width box in the HUD's stat grid.
+const DEMO_NAME = 'Demo (simulated audio)';
+const audioNameBox = document.createElement('div');
+audioNameBox.className = 'wide';
+const audioNameLabel = document.createElement('span');
+audioNameLabel.className = 'stat-label';
+audioNameLabel.textContent = 'AUDIO FILE';
+const audioName = document.createElement('strong');
+audioName.id = 'audio-name';
+audioNameBox.appendChild(audioNameLabel);
+audioNameBox.appendChild(audioName);
+(document.querySelector('.stats') ?? document.querySelector('#hud') ?? document.body).appendChild(audioNameBox);
+function setAudioName(name) {
+  audioName.textContent = name;
+  audioName.title = name; // the full name on hover, in case it is too long to fit
+}
+setAudioName(DEMO_NAME);
+
+// The on-screen controls, kept in step with what the keys actually do.
+const helpBox = document.querySelector('#help');
+if (helpBox) helpBox.innerHTML = 'Drive: <b>W/S</b> or \u2191\u2193 \u00b7 Look: <b>A/D</b> or \u2190\u2192 \u00b7 Recenter view: <b>C</b> \u00b7 Restart: <b>R</b>';
+
 const seed = 1;
 let features;
 let worldGroup;
@@ -75,7 +98,7 @@ let playing = true;
 let playerZ = 3;
 let playerX = 0;
 let shownBiome = -1;  // the biome named in the badge (it only changes once another clearly takes over)
-const BASE_FOG = 0.0027, BASE_SUN = 3.0;
+const BASE_FOG = 0.0027, BASE_SUN = 3.0, BASE_AMBIENT = 2.0;
 const weatherNow = {};
 const keys = new Set();
 const clock = new THREE.Clock();
@@ -115,7 +138,7 @@ function buildWorld(newFeatures = makeFakeAudioFeatures(seed, 48, 0.25)) {
     nextGroup.add(nextRoad);
     // Scenery goes into the world group (not the scene) so clearWorld() removes it along with the terrain.
     const nextScenery = createScenery({
-      scene: nextGroup, getTerrainHeight: nextTerrain.getHeight, biomeAt: nextTerrain.biomeAt, features: worldFeatures, seed,
+      scene: nextGroup, getTerrainHeight: nextTerrain.getHeight, biomeAt: nextTerrain.biomeAt, biomeMap: nextTerrain.biomeMap, features: worldFeatures, seed,
     });
 
     clearWorld();
@@ -125,7 +148,14 @@ function buildWorld(newFeatures = makeFakeAudioFeatures(seed, 48, 0.25)) {
     roadMesh = nextRoad;
     scenery = nextScenery;
     scene.add(worldGroup);
-    console.info('[biome]', terrainInfo.biomeMap.parts.map(p => `${BIOMES[p.biome].name} (temperature ${p.T.toFixed(2)}, moisture ${p.M.toFixed(2)}, hill range ${p.spread.toFixed(1)}, ${p.from.toFixed(0)}-${p.to.toFixed(0)} s)`).join(' | '));
+    // The reading behind the biome, so it can be checked and the scales tuned (see BIOME_CHOICE in BiomeGenerator.js).
+    terrainInfo.biomeMap.parts.forEach(p => console.info(
+      `[biome] ${BIOMES[p.biome].name} (${p.from.toFixed(0)}-${p.to.toFixed(0)} s) | temperature ${p.T.toFixed(2)} = average of`,
+      `centroid ${p.cues.centroidHz?.toFixed(0)} Hz -> ${p.scores[0]?.toFixed(2)},`,
+      `slope ${p.cues.slope?.toFixed(1)} dB/oct -> ${p.scores[1]?.toFixed(2)},`,
+      `treble ${p.cues.trebleDb?.toFixed(1)} dB -> ${p.scores[2]?.toFixed(2)},`,
+      `tonality ${p.cues.tonality?.toFixed(2)} -> ${p.scores[3]?.toFixed(2)}`,
+      `| moisture ${p.M.toFixed(2)} (sustain ${(p.sustain * 80).toFixed(1)} dB) | hill range ${p.spread.toFixed(1)}`));
     playerZ = 3;
     playerX = roadCenterX(playerZ, features, seed);
     elapsed = 0;
@@ -282,6 +312,7 @@ async function handleAudioFile(file) {
     stopAudio();                                        // the new song replaces any sound that was playing
     audioBuffer = newBuffer;                            // only after the world built, so a failure keeps the old audio
     updateSoundButton();                                // unlocks the toggle (it stays Off until the user turns it on)
+    setAudioName(file.name);
   } catch (err) {
     console.error(err);                                 // the old world stays on screen
     setLoading(`Couldn't use that file: ${err.message}`);
@@ -314,9 +345,10 @@ function updateAtmosphere(dt) {
   scene.background.lerp(fogTarget, k);
 
   const wx = blendBiomeWeather(info.weights, weatherNow);
-  wx.snow += info.weights[MOUNTAIN] * (1 - info.T) * 0.8; // mountains only snow when the music is cold
+  wx.snow += info.weights[MOUNTAIN] * Math.max(0, 0.5 - info.T) * 1.6; // mountains snow only when the music is cold (none at or above 0.5)
   scene.fog.density += (BASE_FOG * wx.fog - scene.fog.density) * k;
   sun.intensity += (BASE_SUN * wx.sun - sun.intensity) * k;
+  hemisphere.intensity += (BASE_AMBIENT * wx.ambient - hemisphere.intensity) * k; // a dense canopy blocks the sky light too
   weather.update(dt, camera, wx);
 
   // The biome is large-scale, so it only changes at the handover between pieces of a compilation; the hysteresis just
@@ -325,22 +357,33 @@ function updateAtmosphere(dt) {
   setBadge('Biome:', BIOMES[shownBiome].name, biomeCss(shownBiome));
 }
 
+// The camera is a driver's eye: it rides the road exactly. Its position and base orientation are a pure function of the
+// position along the road (no smoothing, so it can't lag or wander): always on the centerline, a constant height above
+// the road surface, facing the direction of travel (its yaw follows the road's bends, its pitch the road's grade), and
+// never rolling. The only thing added on top is the driver turning their head left and right (A/D or left/right arrows).
+const EYE_HEIGHT = 2.4;
+const LOOK_SPEED = 1.6;              // radians per second the view turns while a look key is held
+const LOOK_LIMIT = Math.PI * 0.9;    // how far round the driver can look
+let lookYaw = 0;                     // how far the view is turned from the road's direction (positive = right)
+const roadPoint = {};
 function updateCamera(dt) {
   const forward = (keys.has('w') || keys.has('arrowup') ? 1 : 0) - (keys.has('s') || keys.has('arrowdown') ? 1 : 0);
-  const sideways = (keys.has('a') || keys.has('arrowright') ? 1 : 0) - (keys.has('d') || keys.has('arrowleft') ? 1 : 0);
+  const turn = (keys.has('d') || keys.has('arrowright') ? 1 : 0) - (keys.has('a') || keys.has('arrowleft') ? 1 : 0);
   scrubbing = forward !== 0;
   if (forward !== 0) playerZ = THREE.MathUtils.clamp(playerZ + forward * dt * 60, 2, WORLD.length - 3);
-  if (sideways !== 0) playerX += sideways * dt * 25;
-  const centerX = roadCenterX(playerZ, features, seed);
-  const roadLimit = Math.max(0, roadHalfWidthX(playerZ, features, seed) - 0.25);
-  playerX = THREE.MathUtils.clamp(playerX, centerX - roadLimit, centerX + roadLimit);
-  const ground = terrainInfo.getHeight(playerX, playerZ) + 2.1;
-  const aheadZ = Math.min(WORLD.length, playerZ + 8);
-  const aheadX = roadCenterX(aheadZ, features, seed);
-  const target = new THREE.Vector3(aheadX, terrainInfo.getHeight(aheadX, aheadZ) + 2.2, aheadZ);
-  const desired = new THREE.Vector3(playerX, ground + 2.0, playerZ - 10);
-  camera.position.lerp(desired, 1 - Math.exp(-dt * 3.2));
-  camera.lookAt(target);
+  lookYaw = THREE.MathUtils.clamp(lookYaw + turn * dt * LOOK_SPEED, -LOOK_LIMIT, LOOK_LIMIT);
+
+  const road = terrainInfo.roadProfile.surfaceAt(playerZ, roadPoint);
+  playerX = road.x;
+  camera.position.set(road.x, road.y + EYE_HEIGHT, road.z);
+  // Heading is the road's, turned by the driver's head; the road's grade tilts the view less the further they look to the side.
+  const heading = Math.atan2(road.tx, road.tz) - lookYaw;
+  const pitch = Math.asin(road.ty) * Math.cos(lookYaw);
+  camera.lookAt(
+    road.x + Math.sin(heading) * Math.cos(pitch),
+    road.y + EYE_HEIGHT + Math.sin(pitch),
+    road.z + Math.cos(heading) * Math.cos(pitch),
+  );
 }
 
 playButton.addEventListener('click', () => {
@@ -354,7 +397,9 @@ window.addEventListener('keydown', event => {
   if (key === 'r') {
     playerZ = 3;
     playerX = roadCenterX(playerZ, features, seed);
+    lookYaw = 0;
   }
+  if (key === 'c') lookYaw = 0; // recenter the view along the road
 });
 window.addEventListener('keyup', event => keys.delete(event.key.toLowerCase()));
 window.addEventListener('blur', () => keys.clear());
