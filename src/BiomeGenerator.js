@@ -37,9 +37,9 @@ export const BIOME_SETTINGS = {
 // Which biome a file gets. The levels are of the spectrum (0..1 = 0 to 80 dB below the file's loudest moment).
 export const BIOME_CHOICE = {
   // Temperature cues: [value that counts as coldest, value that counts as warmest]. Each is on a fixed physical scale.
-  centroidHz: [600, 70],       // balance point of the sound's ENERGY (Hz, judged by octaves; bass carries most of the energy, so it sits low)
-  slopeDbPerOct: [-4.5, -10],  // how fast the spectrum falls with frequency (a mix is typically around -7.5)
-  trebleDb: [-12, -45],        // energy above 4 kHz relative to all energy (dB)
+  centroidHz: [1400, 100],     // balance point of the sound's ENERGY (Hz, judged by octaves; bass carries most of the energy, so it sits low)
+  slopeDbPerOct: [-2.5, -7],   // how fast the spectrum falls with frequency; typical mixes fall about 3 to 6 dB per octave
+  trebleDb: [-5, -26],         // energy above 4 kHz relative to all energy (dB)
   tonality: [0.25, 0.75],      // 0 = noise-like, 1 = one clear tone stands out (the average of the per-moment values)
   sustainDry: -0.20, sustainWet: -0.03, // low-half average level minus its own 95th-percentile level: at or below sustainDry (-16 dB, a very dynamic file) is the driest, at or above sustainWet (-2 dB, a steady, heavily compressed one) the wettest
   mountainSpread: 25,                  // hills spanning at least this many height units (5th to 95th percentile) make it mountains

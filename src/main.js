@@ -133,6 +133,7 @@ function buildWorld(newFeatures = makeFakeAudioFeatures(seed, 48, 0.25)) {
     const nextGroup = new THREE.Group();
     const nextTerrain = createTerrain({ features: worldFeatures, seed });
     nextGroup.add(nextTerrain.mesh);
+    nextGroup.add(nextTerrain.far); // the land carried on to the horizon
     if (nextTerrain.water) nextGroup.add(nextTerrain.water);
     const nextRoad = createRoad({ profile: nextTerrain.roadProfile });
     nextGroup.add(nextRoad);
