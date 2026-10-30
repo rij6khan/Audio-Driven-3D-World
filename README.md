@@ -25,6 +25,7 @@ npm run preview
 - `A`: move right; `D`: move left
 - `←`: move left; `→`: move right
 - `R`: reset to the start
+- `Mouse click + drag`: rotate camera view
 - **Pause journey**: pause/resume the simulated traversal
 
 The demo does not play real audio yet; its fake feature timeline drives the terrain and HUD as the player travels.

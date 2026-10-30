@@ -384,6 +384,36 @@ function updateCamera(dt) {
     road.y + EYE_HEIGHT + Math.sin(pitch),
     road.z + Math.cos(heading) * Math.cos(pitch),
   );
+let cAngleX = 0;
+let cAngleY = 0;
+
+function updateCamera(dt) {
+  const forward = (keys.has('w') || keys.has('arrowup') ? 1 : 0) - (keys.has('s') || keys.has('arrowdown') ? 1 : 0);
+  const sideways = (keys.has('a') || keys.has('arrowright') ? 1 : 0) - (keys.has('d') || keys.has('arrowleft') ? 1 : 0);
+  if (forward !== 0) playerZ = THREE.MathUtils.clamp(playerZ + forward * dt * 32, 2, WORLD.length - 3);
+  if (sideways !== 0) playerX += sideways * dt * 25;
+  const centerX = roadCenterX(playerZ, features, seed);
+  const roadLimit = Math.max(0, roadHalfWidthX(playerZ, features, seed) - 0.25);
+  playerX = THREE.MathUtils.clamp(playerX, centerX - roadLimit, centerX + roadLimit);
+  const ground = terrainInfo.getHeight(playerX, playerZ) + 2.1;
+  const aheadZ = Math.min(WORLD.length, playerZ + 5);
+  const aheadX = roadCenterX(aheadZ, features, seed);
+  const target = new THREE.Vector3(aheadX, terrainInfo.getHeight(aheadX, aheadZ) + 2.2, aheadZ);
+  const desired = new THREE.Vector3(playerX, ground + 2.0, playerZ - 9);
+  camera.position.lerp(desired, 1 - Math.exp(-dt * 3.2));
+  const sensitivity = 0.5;
+  cAngleY -= mdX * sensitivity * dt;
+  cAngleX -= mdY * sensitivity * dt;
+
+  const maxPitch = Math.PI / 2 - 0.01;
+  cAngleX = Math.max(-maxPitch, Math.min(maxPitch, cAngleX));
+
+  mdX = 0;
+  mdY = 0;
+  
+  camera.lookAt(target);
+  camera.rotateY(cAngleY);
+  camera.rotateX(cAngleX);
 }
 
 playButton.addEventListener('click', () => {
@@ -398,6 +428,8 @@ window.addEventListener('keydown', event => {
     playerZ = 3;
     playerX = roadCenterX(playerZ, features, seed);
     lookYaw = 0;
+    cAngleX = 0;
+    cAngleY = 0;
   }
   if (key === 'c') lookYaw = 0; // recenter the view along the road
 });
@@ -408,6 +440,28 @@ window.addEventListener('resize', () => {
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
 });
+
+let isDragging = false;
+let previousMousePosition = {x:0, y:0};
+let mdX = 0;
+let mdY = 0;
+
+renderer.domElement.addEventListener('mousedown', (e) => {
+  isDragging = true;
+  previousMousePosition = {x: e.clientX, y: e.clientY};
+});
+window.addEventListener('mousemove', (e) => {
+  if(!isDragging) return;
+
+  mdX += e.clientX - previousMousePosition.x;
+  mdY += e.clientY - previousMousePosition.y;
+
+  previousMousePosition = {x: e.clientX, y: e.clientY};
+});
+
+window.addEventListener('mouseup', () => {
+  isDragging = false;
+})
 
 function animate() {
   requestAnimationFrame(animate);
