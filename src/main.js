@@ -12,7 +12,7 @@ const timeLabel = document.querySelector('#time');
 const energyLabel = document.querySelector('#energy');
 const biomeLabel = document.querySelector('#biome'); // optional: add a #biome element to the HUD to show it
 const playButton = document.querySelector('#play-pause');
-const audioDropBox = document.querySelector('#new-audio');
+const audioDropBox = document.querySelector('#audio-file');
 const loadingDefaultText = loading.textContent;
 
 const scene = new THREE.Scene();
