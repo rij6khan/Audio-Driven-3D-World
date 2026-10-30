@@ -11,7 +11,7 @@ h1 { font-family: 'Space Grotesk', sans-serif; font-size: 34px; line-height: 1; 
 .stats > div { padding: 10px; background: rgba(255,255,255,.075); border-radius: 11px; }
 .stat-label { display: block; font-size: 8px; letter-spacing: .12em; color: #a8c5b8; margin-bottom: 5px; }
 .stats strong { font-family: 'Space Grotesk', sans-serif; font-size: 18px; font-weight: 600; }
-.controls { display: flex; gap: 8px; }
+.controls { display: flex; flex-wrap: wrap; gap: 8px; }
 button { border: 0; border-radius: 10px; padding: 11px 13px; font: 600 11px 'DM Sans', sans-serif; cursor: pointer; color: #173127; background: #c2f0d2; flex: 1; transition: transform .15s, background .15s; }
 button:hover { transform: translateY(-1px); background: #ddf9e5; }
 button.secondary { background: rgba(255,255,255,.13); color: #f4f7f4; border: 1px solid rgba(255,255,255,.15); }
@@ -19,8 +19,40 @@ button.secondary { background: rgba(255,255,255,.13); color: #f4f7f4; border: 1p
 .legend > div { display: flex; align-items: center; gap: 8px; }
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; }
 .dot.quiet { background: #91c69c; }.dot.loud { background: #d5c39b; }.dot.road { background: #e1e6e1; }
+.dot.hot { background: #d98a5f; }.dot.cold { background: #a9d4e6; }.dot.water { background: #5fa3b5; }
+
+/* Audio upload: the native file input, restyled to match the control panel. */
+input[type="file"] { flex: 1 1 100%; min-width: 0; padding: 6px; border: 1px dashed rgba(255,255,255,.28); border-radius: 10px; background: rgba(255,255,255,.07); color: #c6d7d1; font: 500 11px 'DM Sans', sans-serif; cursor: pointer; transition: background .15s, border-color .15s; }
+input[type="file"]:hover { background: rgba(255,255,255,.12); border-color: rgba(194,240,210,.6); }
+input[type="file"]:focus-visible { outline: 2px solid #c2f0d2; outline-offset: 2px; }
+input[type="file"]::file-selector-button { margin-right: 10px; border: 0; border-radius: 8px; padding: 8px 12px; font: 600 11px 'DM Sans', sans-serif; color: #173127; background: #c2f0d2; cursor: pointer; transition: background .15s; }
+input[type="file"]::file-selector-button:hover { background: #ddf9e5; }
+
+/* A stat box that spans the full width of the stats grid (used by the optional #biome readout). */
+.stats > div.wide { grid-column: 1 / -1; }
 #help { position: fixed; z-index: 2; right: 22px; bottom: 20px; padding: 11px 14px; border-radius: 12px; background: rgba(18,35,34,.68); color: #dbe7e1; font-size: 11px; backdrop-filter: blur(12px); }
 #help b { color: white; }
 #loading { position: fixed; z-index: 3; inset: 0; display: grid; place-items: center; color: #f5f8f7; font-size: 14px; letter-spacing: .03em; background: rgba(13,27,26,.45); transition: opacity .2s; }
 #loading.hidden { opacity: 0; pointer-events: none; }
 @media (max-width: 560px) { #hud { top: 10px; left: 10px; padding: 16px; width: min(340px, calc(100vw - 20px)); } h1 { font-size: 28px; } #help { right: 10px; bottom: 10px; left: 10px; text-align: center; } }
+
+/* Sound toggle: matches the other controls; looks pressed (green) when sound is on. */
+button.secondary[aria-pressed="true"] { background: #c2f0d2; color: #173127; border-color: transparent; }
+button.secondary[aria-pressed="true"]:hover { background: #ddf9e5; }
+button.locked { opacity: .5; cursor: not-allowed; }
+button.locked:hover { transform: none; background: rgba(255,255,255,.13); }
+
+/* Temporary caption (e.g. "Sound is disabled because no audio was submitted."). Doesn't block clicks. */
+#caption { position: fixed; z-index: 4; left: 50%; bottom: 28px; margin: 0; max-width: min(420px, calc(100vw - 44px)); padding: 10px 16px; border: 1px solid rgba(255,255,255,.2); border-radius: 12px; background: rgba(18,35,34,.85); backdrop-filter: blur(12px); color: #f5f8f7; font: 500 12px/1.4 'DM Sans', sans-serif; text-align: center; opacity: 0; transform: translate(-50%, 8px); transition: opacity .25s, transform .25s; pointer-events: none; }
+#caption.visible { opacity: 1; transform: translate(-50%, 0); }
+@media (max-width: 560px) { #caption { bottom: 74px; } }
+
+/* Biome label, upper right: the same glass style as the control panel. The dot takes the biome's signature color. */
+#biome-badge { position: fixed; z-index: 2; top: 22px; right: 22px; display: flex; align-items: center; gap: 9px; padding: 12px 18px; border: 1px solid rgba(255,255,255,.26); border-radius: 16px; background: rgba(18, 35, 34, .77); box-shadow: 0 18px 60px rgba(17,35,32,.18); backdrop-filter: blur(18px); color: #f5f8f7; --biome-color: #a9d8bb; }
+#biome-badge::before { content: ''; width: 10px; height: 10px; border-radius: 50%; background: var(--biome-color); box-shadow: 0 0 0 3px rgba(255,255,255,.16); transition: background .6s; }
+#biome-badge .badge-label { font-size: 10px; letter-spacing: .19em; font-weight: 700; text-transform: uppercase; color: #a9d8bb; }
+#biome-badge strong { font-family: 'Space Grotesk', sans-serif; font-size: 15px; font-weight: 600; }
+@media (max-width: 560px) { #biome-badge { top: auto; bottom: 62px; left: 10px; right: auto; padding: 9px 13px; } }
+
+/* The audio file's name in the HUD: one line, with an ellipsis if it is too long (the full name shows on hover). */
+#audio-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; font-weight: 500; }
