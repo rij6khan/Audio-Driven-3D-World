@@ -70,22 +70,43 @@ function clearWorld() {
   scenery = null;
 }
 
-function buildWorld() {
+function buildWorld(newFeatures) {
   loading.classList.remove('hidden');
-  clearWorld();
-  features = makeFakeAudioFeatures(seed, 48, 0.25);
-  worldGroup = new THREE.Group();
-  terrainInfo = createTerrain({ features, seed });
-  worldGroup.add(terrainInfo.mesh);
-  roadMesh = createRoad({ features, seed, getTerrainHeight: terrainInfo.getHeight });
-  worldGroup.add(roadMesh);
-  scene.add(worldGroup);
-  scenery = createScenery({ scene, getTerrainHeight: terrainInfo.getHeight, features, seed });
-  playerZ = 3;
-  playerX = roadCenterX(playerZ, features, seed);
-  elapsed = 0;
-  loading.classList.add('hidden');
+  try {
+    clearWorld();
+    features = newFeatures;           // was: features = makeFakeAudioFeatures(...)
+    worldGroup = new THREE.Group();
+    terrainInfo = createTerrain({ features, seed });
+    // ... everything else exactly as you have it ...
+    worldGroup.add(terrainInfo.mesh);
+    roadMesh = createRoad({ features, seed, getTerrainHeight: terrainInfo.getHeight });
+    worldGroup.add(roadMesh);
+    scene.add(worldGroup);
+    scenery = createScenery({ scene, getTerrainHeight: terrainInfo.getHeight, features, seed });
+    playerZ = 3;
+    playerX = roadCenterX(playerZ, features, seed);
+    elapsed = 0;
+  } finally {
+    loading.classList.add('hidden');  // runs even if something above throws
+  }
 }
+
+// function buildWorld() {
+//   loading.classList.remove('hidden');
+//   clearWorld();
+//   features = makeFakeAudioFeatures(seed, 48, 0.25);
+//   worldGroup = new THREE.Group();
+//   terrainInfo = createTerrain({ features, seed });
+//   worldGroup.add(terrainInfo.mesh);
+//   roadMesh = createRoad({ features, seed, getTerrainHeight: terrainInfo.getHeight });
+//   worldGroup.add(roadMesh);
+//   scene.add(worldGroup);
+//   scenery = createScenery({ scene, getTerrainHeight: terrainInfo.getHeight, features, seed });
+//   playerZ = 3;
+//   playerX = roadCenterX(playerZ, features, seed);
+//   elapsed = 0;
+//   loading.classList.add('hidden');
+// }
 
 function updateCamera(dt) {
   const forward = (keys.has('w') || keys.has('arrowup') ? 1 : 0) - (keys.has('s') || keys.has('arrowdown') ? 1 : 0);
