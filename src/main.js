@@ -1,16 +1,19 @@
 import * as THREE from 'three';
-import { makeFakeAudioFeatures, sampleAudioFeatures } from './audioData.js';
-import { createTerrain } from './TerrainGenerator.js';
+import { makeFakeAudioFeatures, sampleAudioFeatures, makeAudioFeatures } from './audioData.js';
+import { createTerrain, VIEW_MODES } from './TerrainGenerator.js';
 import { createRoad, roadCenterX, roadHalfWidthX, WORLD } from './RoadGenerator.js';
 import { createScenery } from './PropGenerator.js';
+import { BIOMES, blendBiomeColor } from './BiomeGenerator.js';
 import './style.css';
 
 const app = document.querySelector('#app');
 const loading = document.querySelector('#loading');
 const timeLabel = document.querySelector('#time');
 const energyLabel = document.querySelector('#energy');
+const biomeLabel = document.querySelector('#biome'); // optional: add a #biome element to the HUD to show it
 const playButton = document.querySelector('#play-pause');
-const audioDropBox = document.querySelector('#audio-file');
+const audioDropBox = document.querySelector('#new-audio');
+const loadingDefaultText = loading.textContent;
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0xb8d5d9);
@@ -51,8 +54,12 @@ let elapsed = 0;
 let playing = true;
 let playerZ = 3;
 let playerX = 0;
+let viewIndex = 0; // 0 = biome colors, then the temperature and moisture debug maps (press H)
+let shownLabel = '';
 const keys = new Set();
 const clock = new THREE.Clock();
+const fogTarget = new THREE.Color();
+const fogRgb = [0, 0, 0];
 
 function clearWorld() {
   if (!worldGroup) return;
@@ -70,43 +77,95 @@ function clearWorld() {
   scenery = null;
 }
 
-function buildWorld(newFeatures=makeFakeAudioFeatures(seed, 48, 0.25)) {
+// With no argument it builds the demo world from fake data; with a features object it builds from that.
+// The new world is fully built BEFORE the old one is removed, so if generation throws the old world stays.
+function buildWorld(newFeatures = makeFakeAudioFeatures(seed, 48, 0.25)) {
   loading.classList.remove('hidden');
   try {
+    const nextGroup = new THREE.Group();
+    const nextTerrain = createTerrain({ features: newFeatures, seed });
+    nextGroup.add(nextTerrain.mesh);
+    if (nextTerrain.water) nextGroup.add(nextTerrain.water);
+    const nextRoad = createRoad({ features: newFeatures, seed, getTerrainHeight: nextTerrain.getHeight });
+    nextGroup.add(nextRoad);
+    // Scenery goes into the world group (not the scene) so clearWorld() removes it along with the terrain.
+    const nextScenery = createScenery({
+      scene: nextGroup, getTerrainHeight: nextTerrain.getHeight, biomeAt: nextTerrain.biomeAt, features: newFeatures, seed,
+    });
+
     clearWorld();
-    features = newFeatures;           // was: features = makeFakeAudioFeatures(...)
-    worldGroup = new THREE.Group();
-    terrainInfo = createTerrain({ features, seed });
-    // ... everything else exactly as you have it ...
-    worldGroup.add(terrainInfo.mesh);
-    roadMesh = createRoad({ features, seed, getTerrainHeight: terrainInfo.getHeight });
-    worldGroup.add(roadMesh);
+    features = newFeatures;
+    worldGroup = nextGroup;
+    terrainInfo = nextTerrain;
+    roadMesh = nextRoad;
+    scenery = nextScenery;
     scene.add(worldGroup);
-    scenery = createScenery({ scene, getTerrainHeight: terrainInfo.getHeight, features, seed });
+    terrainInfo.setView(VIEW_MODES[viewIndex]);
+    console.info('[biomes] temperature/moisture correlation:', terrainInfo.biomeMap.diagnostics.correlationTM.toFixed(2),
+      '| anchors adapted:', terrainInfo.biomeMap.diagnostics.anchorsAdapted);
     playerZ = 3;
     playerX = roadCenterX(playerZ, features, seed);
     elapsed = 0;
   } finally {
-    loading.classList.add('hidden');  // runs even if something above throws
+    loading.classList.add('hidden');
   }
 }
 
-// function buildWorld() {
-//   loading.classList.remove('hidden');
-//   clearWorld();
-//   features = makeFakeAudioFeatures(seed, 48, 0.25);
-//   worldGroup = new THREE.Group();
-//   terrainInfo = createTerrain({ features, seed });
-//   worldGroup.add(terrainInfo.mesh);
-//   roadMesh = createRoad({ features, seed, getTerrainHeight: terrainInfo.getHeight });
-//   worldGroup.add(roadMesh);
-//   scene.add(worldGroup);
-//   scenery = createScenery({ scene, getTerrainHeight: terrainInfo.getHeight, features, seed });
-//   playerZ = 3;
-//   playerX = roadCenterX(playerZ, features, seed);
-//   elapsed = 0;
-//   loading.classList.add('hidden');
-// }
+/* ------------------------------ audio upload ------------------------------ */
+
+function setLoading(text) {
+  loading.textContent = text;
+  loading.classList.remove('hidden');
+}
+const nextFrame = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+
+async function handleAudioFile(file) {
+  if (!file) return;
+  setLoading('Analyzing audio…');
+  try {
+    const newFeatures = await makeAudioFeatures(file); // slow part: decode + spectrum
+    setLoading(loadingDefaultText);
+    await nextFrame();                                  // let the overlay paint before the heavy build
+    buildWorld(newFeatures);
+  } catch (err) {
+    console.error(err);                                 // the old world stays on screen
+    setLoading(`Couldn't use that file: ${err.message}`);
+    setTimeout(() => {
+      loading.textContent = loadingDefaultText;
+      loading.classList.add('hidden');
+    }, 3500);
+  }
+}
+
+if (audioDropBox) {
+  // 'change' bubbles, so this works whether #new-audio is the file input itself or a wrapper around it.
+  audioDropBox.addEventListener('change', event => {
+    const input = event.target;
+    handleAudioFile(input.files?.[0]).finally(() => { input.value = ''; }); // lets the same file be picked again
+  });
+} else {
+  console.warn('No element with id "new-audio" found: audio upload is disabled.');
+}
+
+/* ---------------------------- atmosphere & camera ---------------------------- */
+
+// Fog and sky drift toward the fog color of whichever biome is just ahead of the player.
+function updateAtmosphere(dt) {
+  const info = terrainInfo.biomeAt(playerX, Math.min(WORLD.length, playerZ + 12));
+  blendBiomeColor(info.weights, 'fog', fogRgb);
+  fogTarget.setRGB(fogRgb[0], fogRgb[1], fogRgb[2]);
+  const k = 1 - Math.exp(-dt * 1.5);
+  scene.fog.color.lerp(fogTarget, k);
+  scene.background.lerp(fogTarget, k);
+
+  if (biomeLabel) {
+    const label = viewIndex === 0 ? BIOMES[info.dominant].name : `${VIEW_MODES[viewIndex]} map`;
+    if (label !== shownLabel) {
+      shownLabel = label;
+      biomeLabel.textContent = label;
+    }
+  }
+}
 
 function updateCamera(dt) {
   const forward = (keys.has('w') || keys.has('arrowup') ? 1 : 0) - (keys.has('s') || keys.has('arrowdown') ? 1 : 0);
@@ -129,24 +188,6 @@ playButton.addEventListener('click', () => {
   playing = !playing;
   playButton.textContent = playing ? 'Pause journey' : 'Resume journey';
 });
-
-// Stub: pretends to analyze the file. Different files -> different fake worlds.
-async function loadFeaturesFromFile(file) {
-  return makeFakeAudioFeatures(file.size % 997, 60, 0.25);
-}
-
-audioDropBox.addEventListener('change', async event => {
-  const file = event.target.files[0];
-  if (!file) return;                              // user cancelled the picker
-  try {
-    const newFeatures = await loadFeaturesFromFile(file); // 1. get data (may take time)
-    buildWorld(newFeatures);                              // 2. then swap worlds instantly
-  } catch (err) {
-    console.error(err);                                   // old world stays on screen
-  }
-  event.target.value = '';                                // allows re-picking the same file
-});
-
 window.addEventListener('keydown', event => {
   const key = event.key.toLowerCase();
   if (['arrowup', 'arrowdown', 'arrowleft', 'arrowright', ' '].includes(key)) event.preventDefault();
@@ -154,6 +195,11 @@ window.addEventListener('keydown', event => {
   if (key === 'r') {
     playerZ = 3;
     playerX = roadCenterX(playerZ, features, seed);
+  }
+  if (key === 'h' && terrainInfo) {
+    // Cycle: biome colors -> temperature map -> moisture map.
+    viewIndex = (viewIndex + 1) % VIEW_MODES.length;
+    terrainInfo.setView(VIEW_MODES[viewIndex]);
   }
 });
 window.addEventListener('keyup', event => keys.delete(event.key.toLowerCase()));
@@ -173,6 +219,7 @@ function animate() {
     playerZ = Math.min(WORLD.length - 3, playerZ + dt * 3.4);
   }
   updateCamera(dt);
+  updateAtmosphere(dt);
   const time = (playerZ / WORLD.length) * features.duration;
   const current = sampleAudioFeatures(features, time);
   timeLabel.textContent = formatTime(time);

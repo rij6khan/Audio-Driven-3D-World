@@ -11,7 +11,7 @@ h1 { font-family: 'Space Grotesk', sans-serif; font-size: 34px; line-height: 1; 
 .stats > div { padding: 10px; background: rgba(255,255,255,.075); border-radius: 11px; }
 .stat-label { display: block; font-size: 8px; letter-spacing: .12em; color: #a8c5b8; margin-bottom: 5px; }
 .stats strong { font-family: 'Space Grotesk', sans-serif; font-size: 18px; font-weight: 600; }
-.controls { display: flex; gap: 8px; }
+.controls { display: flex; flex-wrap: wrap; gap: 8px; }
 button { border: 0; border-radius: 10px; padding: 11px 13px; font: 600 11px 'DM Sans', sans-serif; cursor: pointer; color: #173127; background: #c2f0d2; flex: 1; transition: transform .15s, background .15s; }
 button:hover { transform: translateY(-1px); background: #ddf9e5; }
 button.secondary { background: rgba(255,255,255,.13); color: #f4f7f4; border: 1px solid rgba(255,255,255,.15); }
@@ -19,6 +19,17 @@ button.secondary { background: rgba(255,255,255,.13); color: #f4f7f4; border: 1p
 .legend > div { display: flex; align-items: center; gap: 8px; }
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; }
 .dot.quiet { background: #91c69c; }.dot.loud { background: #d5c39b; }.dot.road { background: #e1e6e1; }
+.dot.hot { background: #d98a5f; }.dot.cold { background: #a9d4e6; }.dot.water { background: #5fa3b5; }
+
+/* Audio upload: the native file input, restyled to match the control panel. */
+input[type="file"] { flex: 1 1 100%; min-width: 0; padding: 6px; border: 1px dashed rgba(255,255,255,.28); border-radius: 10px; background: rgba(255,255,255,.07); color: #c6d7d1; font: 500 11px 'DM Sans', sans-serif; cursor: pointer; transition: background .15s, border-color .15s; }
+input[type="file"]:hover { background: rgba(255,255,255,.12); border-color: rgba(194,240,210,.6); }
+input[type="file"]:focus-visible { outline: 2px solid #c2f0d2; outline-offset: 2px; }
+input[type="file"]::file-selector-button { margin-right: 10px; border: 0; border-radius: 8px; padding: 8px 12px; font: 600 11px 'DM Sans', sans-serif; color: #173127; background: #c2f0d2; cursor: pointer; transition: background .15s; }
+input[type="file"]::file-selector-button:hover { background: #ddf9e5; }
+
+/* A stat box that spans the full width of the stats grid (used by the optional #biome readout). */
+.stats > div.wide { grid-column: 1 / -1; }
 #help { position: fixed; z-index: 2; right: 22px; bottom: 20px; padding: 11px 14px; border-radius: 12px; background: rgba(18,35,34,.68); color: #dbe7e1; font-size: 11px; backdrop-filter: blur(12px); }
 #help b { color: white; }
 #loading { position: fixed; z-index: 3; inset: 0; display: grid; place-items: center; color: #f5f8f7; font-size: 14px; letter-spacing: .03em; background: rgba(13,27,26,.45); transition: opacity .2s; }
