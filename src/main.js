@@ -10,6 +10,7 @@ const loading = document.querySelector('#loading');
 const timeLabel = document.querySelector('#time');
 const energyLabel = document.querySelector('#energy');
 const playButton = document.querySelector('#play-pause');
+const audioDropBox = document.querySelector('#new-audio');
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0xb8d5d9);
@@ -107,6 +108,19 @@ playButton.addEventListener('click', () => {
   playing = !playing;
   playButton.textContent = playing ? 'Pause journey' : 'Resume journey';
 });
+
+audioDropBox.addEventListener('change', async () => {
+  const file = audioInput.files[0];
+  if (!file) return;               // user cancelled the picker
+  try {
+    clearWorld();
+    await buildWorld(file);        // uploads, waits for features, rebuilds the scene
+  } catch (err) {
+    console.error(err);            // e.g. server not running, undecodable file
+  }
+  audioInput.value = '';           // lets the same file be chosen again
+});
+
 window.addEventListener('keydown', event => {
   const key = event.key.toLowerCase();
   if (['arrowup', 'arrowdown', 'arrowleft', 'arrowright', ' '].includes(key)) event.preventDefault();

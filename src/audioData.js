@@ -44,6 +44,7 @@ export function sampleAudioFeatures(features, time) {
   const a = samples[Math.max(0, low - 1)];
   const span = b.time - a.time;
   const f = span > 0 ? (t - a.time) / span : 0;
+
   return {
     volume: lerp(a.volume, b.volume, f),
     pitch: lerp(a.pitch, b.pitch, f),
