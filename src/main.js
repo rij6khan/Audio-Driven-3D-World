@@ -70,7 +70,7 @@ function clearWorld() {
   scenery = null;
 }
 
-function buildWorld(newFeatures) {
+function buildWorld(newFeatures=makeFakeAudioFeatures(seed, 48, 0.25)) {
   loading.classList.remove('hidden');
   try {
     clearWorld();
