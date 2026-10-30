@@ -10,7 +10,7 @@ const loading = document.querySelector('#loading');
 const timeLabel = document.querySelector('#time');
 const energyLabel = document.querySelector('#energy');
 const playButton = document.querySelector('#play-pause');
-const audioDropBox = document.querySelector('#new-audio');
+const audioDropBox = document.querySelector('#audio-file');
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0xb8d5d9);
@@ -130,16 +130,21 @@ playButton.addEventListener('click', () => {
   playButton.textContent = playing ? 'Pause journey' : 'Resume journey';
 });
 
-audioDropBox.addEventListener('change', async () => {
-  const file = audioInput.files[0];
-  if (!file) return;               // user cancelled the picker
+// Stub: pretends to analyze the file. Different files -> different fake worlds.
+async function loadFeaturesFromFile(file) {
+  return makeFakeAudioFeatures(file.size % 997, 60, 0.25);
+}
+
+audioDropBox.addEventListener('change', async event => {
+  const file = event.target.files[0];
+  if (!file) return;                              // user cancelled the picker
   try {
-    clearWorld();
-    await buildWorld(file);        // uploads, waits for features, rebuilds the scene
+    const newFeatures = await loadFeaturesFromFile(file); // 1. get data (may take time)
+    buildWorld(newFeatures);                              // 2. then swap worlds instantly
   } catch (err) {
-    console.error(err);            // e.g. server not running, undecodable file
+    console.error(err);                                   // old world stays on screen
   }
-  audioInput.value = '';           // lets the same file be chosen again
+  event.target.value = '';                                // allows re-picking the same file
 });
 
 window.addEventListener('keydown', event => {
