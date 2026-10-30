@@ -1,7 +1,11 @@
 import * as THREE from 'three';
 import { WORLD, roadCenterX } from './RoadGenerator.js';
 import { BIOMES } from './BiomeGenerator.js';
+import { sampleAudioFeatures } from './audioData.js';
+import { timeAtZ } from './Timeline.js';
+import { createNoise } from './noise.js';
 
+// Placement attempts per 620 units of road (the original world length); scaled to the actual length below.
 const TREE_ATTEMPTS = 1100;
 const ROCK_ATTEMPTS = 300;
 
@@ -9,6 +13,10 @@ const ROCK_ATTEMPTS = 300;
 // `biomeAt(x, z)` comes from createTerrain and says which biomes (and how much water) are at a spot.
 export function createScenery({ scene: parent, getTerrainHeight, biomeAt, features, seed }) {
   const rng = seededRandom(seed + 717);
+  const noise = createNoise(seed + 11);
+  const scale = WORLD.length / 620;
+  const treeAttempts = Math.min(9000, Math.round(TREE_ATTEMPTS * scale));
+  const rockAttempts = Math.min(2500, Math.round(ROCK_ATTEMPTS * scale));
   const coneGeometry = new THREE.ConeGeometry(1, 1, 7);
   const sphereGeometry = new THREE.SphereGeometry(1, 8, 6);
   const trunkGeometry = new THREE.CylinderGeometry(0.16, 0.22, 1, 6);
@@ -26,21 +34,41 @@ export function createScenery({ scene: parent, getTerrainHeight, biomeAt, featur
   const trees = new THREE.Group();
   const rocks = new THREE.Group();
 
-  function addPart(group, geometry, material, x, y, z, sx, sy, sz, castShadow = true) {
-    const mesh = new THREE.Mesh(geometry, material);
-    mesh.position.set(x, y, z);
-    mesh.scale.set(sx, sy, sz);
-    mesh.castShadow = castShadow;
-    group.add(mesh);
-    return mesh;
+  // Every tree is a few scaled primitives. Rather than one mesh each (thousands of draw calls on a long road),
+  // parts that share a geometry and material are collected and drawn as ONE instanced mesh.
+  const batches = new Map(); // geometry -> material -> { group, items }
+  function addPart(group, geometry, material, x, y, z, sx, sy, sz, rotation = [0, 0, 0]) {
+    if (!batches.has(geometry)) batches.set(geometry, new Map());
+    const byMaterial = batches.get(geometry);
+    if (!byMaterial.has(material)) byMaterial.set(material, { group, items: [] });
+    byMaterial.get(material).items.push({ x, y, z, sx, sy, sz, rotation });
+  }
+  function buildInstances() {
+    const dummy = new THREE.Object3D();
+    for (const [geometry, byMaterial] of batches) {
+      for (const [material, { group, items }] of byMaterial) {
+        const mesh = new THREE.InstancedMesh(geometry, material, items.length);
+        items.forEach((it, i) => {
+          dummy.position.set(it.x, it.y, it.z);
+          dummy.rotation.set(it.rotation[0], it.rotation[1], it.rotation[2]);
+          dummy.scale.set(it.sx, it.sy, it.sz);
+          dummy.updateMatrix();
+          mesh.setMatrixAt(i, dummy.matrix);
+        });
+        mesh.instanceMatrix.needsUpdate = true;
+        mesh.castShadow = true;
+        mesh.receiveShadow = group === rocks;
+        mesh.frustumCulled = false; // the instances span the whole road, so a single bounding sphere would be wrong
+        group.add(mesh);
+      }
+    }
   }
 
   // Each tree shape is a few scaled primitives. `s` is the overall size, `hex` the leaf color.
   const shapes = {
     cone(x, g, z, s, hex, r) {
       addPart(trees, trunkGeometry, trunkMaterial, x, g + s * 0.25, z, s * 0.10, s * 0.55, s * 0.10);
-      const crown = addPart(trees, coneGeometry, colored(hex), x, g + s * 0.82, z, s * 0.48, s * 1.05, s * 0.48);
-      crown.rotation.y = r * Math.PI;
+      addPart(trees, coneGeometry, colored(hex), x, g + s * 0.82, z, s * 0.48, s * 1.05, s * 0.48, [0, r * Math.PI, 0]);
     },
     round(x, g, z, s, hex) {
       addPart(trees, trunkGeometry, trunkMaterial, x, g + s * 0.3, z, s * 0.10, s * 0.65, s * 0.10);
@@ -54,6 +82,14 @@ export function createScenery({ scene: parent, getTerrainHeight, biomeAt, featur
       const m = colored(hex);
       addPart(trees, trunkGeometry, m, x, g + s * 0.45, z, s * 0.12, s * 0.9, s * 0.12);
       addPart(trees, trunkGeometry, m, x + s * 0.2, g + s * 0.55, z, s * 0.07, s * 0.35, s * 0.07);
+    },
+    reed(x, g, z, s, hex, r) {
+      const m = colored(hex);
+      for (let k = 0; k < 4; k++) {
+        const a = r * 6.28 + k * 1.7, off = s * 0.16 * (0.5 + (k % 2));
+        const h = s * (0.85 + 0.12 * k);
+        addPart(trees, trunkGeometry, m, x + Math.cos(a) * off, g + h * 0.5, z + Math.sin(a) * off, s * 0.035, h, s * 0.035);
+      }
     },
     shrub(x, g, z, s, hex) {
       addPart(trees, sphereGeometry, colored(hex), x, g + s * 0.12, z, s * 0.45, s * 0.28, s * 0.45);
@@ -70,7 +106,17 @@ export function createScenery({ scene: parent, getTerrainHeight, biomeAt, featur
     return weights.length - 1;
   }
 
-  for (let i = 0; i < TREE_ATTEMPTS; i++) {
+  // How busy the music is at road position z (0..1) sets three things about the scenery there:
+  //   quantity     busier music, more plants and rocks
+  //   distribution calm music spreads them evenly; busy music gathers them into clumps and leaves gaps
+  //   variety      busy music uses more of a biome's colors and a wider range of sizes
+  const busyAt = z => sampleAudioFeatures(features, timeAtZ(features, z)).complexity;
+  const crowdAt = (x, z, busy) => {
+    const clump = 0.5 + 0.5 * noise(x * 0.045, z * 0.045);
+    return (0.35 + 0.95 * busy) * (1 + (2 * clump - 1) * 0.8 * busy);
+  };
+
+  for (let i = 0; i < treeAttempts; i++) {
     const z = 8 + rng() * (WORLD.length - 16);
     const x = (rng() - 0.5) * (WORLD.width - 12);
     if (Math.abs(x - roadCenterX(z, features, seed)) < WORLD.roadWidth * 1.6) continue;
@@ -79,13 +125,14 @@ export function createScenery({ scene: parent, getTerrainHeight, biomeAt, featur
     const biome = BIOMES[pickBiome(info.weights)];
     const spec = biome.tree;
     const roll = rng(), colorRoll = rng(), sizeRoll = rng(), spin = rng();
-    if (!spec || roll > spec.density) continue;
-    const size = spec.size[0] + (spec.size[1] - spec.size[0]) * sizeRoll;
-    const hex = spec.colors[Math.floor(colorRoll * spec.colors.length)];
+    const busy = busyAt(z);
+    if (!spec || roll > spec.density * crowdAt(x, z, busy)) continue;
+    const size = (spec.size[0] + spec.size[1]) / 2 + (sizeRoll - 0.5) * (spec.size[1] - spec.size[0]) * (0.35 + 0.65 * busy);
+    const hex = spec.colors[Math.floor(colorRoll * Math.max(1, Math.ceil(spec.colors.length * (0.4 + 0.6 * busy))))];
     shapes[spec.shape](x, info.height, z, size, hex, spin);
   }
 
-  for (let i = 0; i < ROCK_ATTEMPTS; i++) {
+  for (let i = 0; i < rockAttempts; i++) {
     const z = 5 + rng() * (WORLD.length - 10);
     const x = (rng() - 0.5) * (WORLD.width - 8);
     if (Math.abs(x - roadCenterX(z, features, seed)) < WORLD.roadWidth * 1.35) continue;
@@ -93,17 +140,14 @@ export function createScenery({ scene: parent, getTerrainHeight, biomeAt, featur
     if (info.water > 0.03) continue;
     const biome = BIOMES[pickBiome(info.weights)];
     const roll = rng();
-    if (roll > biome.rockDensity * 0.6) continue;
+    if (roll > biome.rockDensity * 0.6 * crowdAt(x, z, busyAt(z))) continue;
     const size = 0.4 + rng() * 2.2;
-    const rock = new THREE.Mesh(rockGeometry, colored(biome.rock, { flatShading: true }));
-    rock.position.set(x, info.height + size * 0.28, z);
-    rock.scale.set(size * (0.7 + rng() * 0.5), size * 0.45, size * (0.6 + rng() * 0.6));
-    rock.rotation.set(rng(), rng() * Math.PI, rng());
-    rock.castShadow = true;
-    rock.receiveShadow = true;
-    rocks.add(rock);
+    const sx = size * (0.7 + rng() * 0.5), sz = size * (0.6 + rng() * 0.6);
+    addPart(rocks, rockGeometry, colored(biome.rock, { flatShading: true }), x, info.height + size * 0.28, z,
+      sx, size * 0.45, sz, [rng(), rng() * Math.PI, rng()]);
   }
 
+  buildInstances();
   parent.add(trees, rocks);
   return { trees, rocks };
 }

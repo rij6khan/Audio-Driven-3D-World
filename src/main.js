@@ -1,17 +1,17 @@
 import * as THREE from 'three';
 import { makeFakeAudioFeatures, sampleAudioFeatures, analyzeAudioFile, isSilentAt } from './audioData.js';
-import { createTerrain, VIEW_MODES } from './TerrainGenerator.js';
-import { createRoad, roadCenterX, roadHalfWidthX, WORLD } from './RoadGenerator.js';
+import { createTerrain } from './TerrainGenerator.js';
+import { createRoad, roadCenterX, roadHalfWidthX, setWorldLength, WORLD } from './RoadGenerator.js';
 import { createScenery } from './PropGenerator.js';
-import { BIOMES, blendBiomeColor } from './BiomeGenerator.js';
-import { shapeFeatures } from './FeatureShaper.js';
+import { BIOMES, MOUNTAIN, blendBiomeColor, blendBiomeWeather, biomeCss } from './BiomeGenerator.js';
+import { createWeather } from './Weather.js';
+import { prepareFeatures } from './FeatureShaper.js';
 import './style.css';
 
 const app = document.querySelector('#app');
 const loading = document.querySelector('#loading');
 const timeLabel = document.querySelector('#time');
 const energyLabel = document.querySelector('#energy');
-const biomeLabel = document.querySelector('#biome'); // optional: add a #biome element to the HUD to show it
 const playButton = document.querySelector('#play-pause');
 const audioDropBox = document.querySelector('#audio-file');
 const loadingDefaultText = loading.textContent;
@@ -38,12 +38,31 @@ sun.shadow.camera.left = -150;
 sun.shadow.camera.right = 150;
 sun.shadow.camera.top = 200;
 sun.shadow.camera.bottom = -100;
-scene.add(sun);
+scene.add(sun, sun.target);
 
 // A visible sun disk helps the scene feel less like a bare technical demo.
 const sunDisk = new THREE.Mesh(new THREE.SphereGeometry(8, 24, 16), new THREE.MeshBasicMaterial({ color: 0xffedc2 }));
 sunDisk.position.set(95, 95, 500);
 scene.add(sunDisk);
+
+const weather = createWeather(scene);
+
+// The biome label, upper right.
+const badge = document.createElement('div');
+badge.id = 'biome-badge';
+badge.setAttribute('role', 'status');
+const badgeLabel = document.createElement('span');
+badgeLabel.className = 'badge-label';
+const badgeName = document.createElement('strong');
+badge.appendChild(badgeLabel);
+badge.appendChild(badgeName);
+document.body.appendChild(badge);
+function setBadge(label, name, color) {
+  if (badgeName.textContent === name) return;
+  badgeLabel.textContent = label;
+  badgeName.textContent = name;
+  badge.style.setProperty('--biome-color', color);
+}
 
 const seed = 1;
 let features;
@@ -55,8 +74,9 @@ let elapsed = 0;
 let playing = true;
 let playerZ = 3;
 let playerX = 0;
-let viewIndex = 0; // 0 = biome colors, then the temperature and moisture debug maps (press H)
-let shownLabel = '';
+let shownBiome = -1;  // the biome named in the badge (it only changes once another clearly takes over)
+const BASE_FOG = 0.0027, BASE_SUN = 3.0;
+const weatherNow = {};
 const keys = new Set();
 const clock = new THREE.Clock();
 const fogTarget = new THREE.Color();
@@ -66,6 +86,7 @@ function clearWorld() {
   if (!worldGroup) return;
   scene.remove(worldGroup);
   worldGroup.traverse(obj => {
+    if (obj.isInstancedMesh) obj.dispose();
     if (obj.geometry) obj.geometry.dispose();
     if (obj.material) {
       const materials = Array.isArray(obj.material) ? obj.material : [obj.material];
@@ -82,31 +103,36 @@ function clearWorld() {
 // The new world is fully built BEFORE the old one is removed, so if generation throws the old world stays.
 function buildWorld(newFeatures = makeFakeAudioFeatures(seed, 48, 0.25)) {
   loading.classList.remove('hidden');
+  const previousLength = WORLD.length;
   try {
+    const worldFeatures = prepareFeatures(newFeatures);      // adds the timeline; shapes real audio's terrain
+    setWorldLength(worldFeatures.timeline.length);           // the road is as long as the song takes to drive
     const nextGroup = new THREE.Group();
-    const nextTerrain = createTerrain({ features: newFeatures, seed });
+    const nextTerrain = createTerrain({ features: worldFeatures, seed });
     nextGroup.add(nextTerrain.mesh);
     if (nextTerrain.water) nextGroup.add(nextTerrain.water);
-    const nextRoad = createRoad({ features: newFeatures, seed, getTerrainHeight: nextTerrain.getHeight });
+    const nextRoad = createRoad({ profile: nextTerrain.roadProfile });
     nextGroup.add(nextRoad);
     // Scenery goes into the world group (not the scene) so clearWorld() removes it along with the terrain.
     const nextScenery = createScenery({
-      scene: nextGroup, getTerrainHeight: nextTerrain.getHeight, biomeAt: nextTerrain.biomeAt, features: newFeatures, seed,
+      scene: nextGroup, getTerrainHeight: nextTerrain.getHeight, biomeAt: nextTerrain.biomeAt, features: worldFeatures, seed,
     });
 
     clearWorld();
-    features = newFeatures;
+    features = worldFeatures;
     worldGroup = nextGroup;
     terrainInfo = nextTerrain;
     roadMesh = nextRoad;
     scenery = nextScenery;
     scene.add(worldGroup);
-    terrainInfo.setView(VIEW_MODES[viewIndex]);
-    console.info('[biomes] temperature/moisture correlation:', terrainInfo.biomeMap.diagnostics.correlationTM.toFixed(2),
-      '| anchors adapted:', terrainInfo.biomeMap.diagnostics.anchorsAdapted);
+    console.info('[biome]', terrainInfo.biomeMap.parts.map(p => `${BIOMES[p.biome].name} (temperature ${p.T.toFixed(2)}, moisture ${p.M.toFixed(2)}, hill range ${p.spread.toFixed(1)}, ${p.from.toFixed(0)}-${p.to.toFixed(0)} s)`).join(' | '));
     playerZ = 3;
     playerX = roadCenterX(playerZ, features, seed);
     elapsed = 0;
+    shownBiome = -1;
+  } catch (err) {
+    setWorldLength(previousLength); // the old world stays on screen, so keep its length
+    throw err;
   } finally {
     loading.classList.add('hidden');
   }
@@ -116,7 +142,6 @@ function buildWorld(newFeatures = makeFakeAudioFeatures(seed, 48, 0.25)) {
 
 const DRIFT_LIMIT = 0.35;     // seconds the sound may drift from the playhead before it is re-synced
 const SILENCE_WINDOW = 1;     // seconds of upcoming audio checked when the user turns sound on
-const DEMO_SPEED = 3.4;       // world units per second when there is no real audio (the fake demo)
 
 let audioBuffer = null;       // the submitted file, decoded. null until a file is submitted
 let soundOn = false;
@@ -162,7 +187,7 @@ function updateSoundButton() {
 }
 
 // Where the user is on the road, as a time in the song.
-function worldTime() { return (playerZ / WORLD.length) * features.duration; }
+function worldTime() { return features.timeline.timeAt(playerZ); }
 
 function ensureAudioContext() {
   if (!audioContext) {
@@ -253,7 +278,7 @@ async function handleAudioFile(file) {
     const { features: newFeatures, audioBuffer: newBuffer } = await analyzeAudioFile(file); // slow part: decode + spectrum
     setLoading(loadingDefaultText);
     await nextFrame();                                  // let the overlay paint before the heavy build
-    buildWorld(shapeFeatures(newFeatures));            // smooth + rescale real-audio features to the demo's range and roughness
+    buildWorld(newFeatures);
     stopAudio();                                        // the new song replaces any sound that was playing
     audioBuffer = newBuffer;                            // only after the world built, so a failure keeps the old audio
     updateSoundButton();                                // unlocks the toggle (it stays Off until the user turns it on)
@@ -279,7 +304,7 @@ if (audioDropBox) {
 
 /* ---------------------------- atmosphere & camera ---------------------------- */
 
-// Fog and sky drift toward the fog color of whichever biome is just ahead of the player.
+// Fog, sky, sunlight and weather drift toward the biome just ahead of the car, and the badge names it.
 function updateAtmosphere(dt) {
   const info = terrainInfo.biomeAt(playerX, Math.min(WORLD.length, playerZ + 12));
   blendBiomeColor(info.weights, 'fog', fogRgb);
@@ -288,29 +313,32 @@ function updateAtmosphere(dt) {
   scene.fog.color.lerp(fogTarget, k);
   scene.background.lerp(fogTarget, k);
 
-  if (biomeLabel) {
-    const label = viewIndex === 0 ? BIOMES[info.dominant].name : `${VIEW_MODES[viewIndex]} map`;
-    if (label !== shownLabel) {
-      shownLabel = label;
-      biomeLabel.textContent = label;
-    }
-  }
+  const wx = blendBiomeWeather(info.weights, weatherNow);
+  wx.snow += info.weights[MOUNTAIN] * (1 - info.T) * 0.8; // mountains only snow when the music is cold
+  scene.fog.density += (BASE_FOG * wx.fog - scene.fog.density) * k;
+  sun.intensity += (BASE_SUN * wx.sun - sun.intensity) * k;
+  weather.update(dt, camera, wx);
+
+  // The biome is large-scale, so it only changes at the handover between pieces of a compilation; the hysteresis just
+  // keeps the label steady through that handover.
+  if (shownBiome < 0 || (info.dominant !== shownBiome && info.weights[info.dominant] > info.weights[shownBiome] + 0.08)) shownBiome = info.dominant;
+  setBadge('Biome:', BIOMES[shownBiome].name, biomeCss(shownBiome));
 }
 
 function updateCamera(dt) {
   const forward = (keys.has('w') || keys.has('arrowup') ? 1 : 0) - (keys.has('s') || keys.has('arrowdown') ? 1 : 0);
   const sideways = (keys.has('a') || keys.has('arrowright') ? 1 : 0) - (keys.has('d') || keys.has('arrowleft') ? 1 : 0);
   scrubbing = forward !== 0;
-  if (forward !== 0) playerZ = THREE.MathUtils.clamp(playerZ + forward * dt * 32, 2, WORLD.length - 3);
+  if (forward !== 0) playerZ = THREE.MathUtils.clamp(playerZ + forward * dt * 60, 2, WORLD.length - 3);
   if (sideways !== 0) playerX += sideways * dt * 25;
   const centerX = roadCenterX(playerZ, features, seed);
   const roadLimit = Math.max(0, roadHalfWidthX(playerZ, features, seed) - 0.25);
   playerX = THREE.MathUtils.clamp(playerX, centerX - roadLimit, centerX + roadLimit);
   const ground = terrainInfo.getHeight(playerX, playerZ) + 2.1;
-  const aheadZ = Math.min(WORLD.length, playerZ + 5);
+  const aheadZ = Math.min(WORLD.length, playerZ + 8);
   const aheadX = roadCenterX(aheadZ, features, seed);
   const target = new THREE.Vector3(aheadX, terrainInfo.getHeight(aheadX, aheadZ) + 2.2, aheadZ);
-  const desired = new THREE.Vector3(playerX, ground + 2.0, playerZ - 9);
+  const desired = new THREE.Vector3(playerX, ground + 2.0, playerZ - 10);
   camera.position.lerp(desired, 1 - Math.exp(-dt * 3.2));
   camera.lookAt(target);
 }
@@ -327,11 +355,6 @@ window.addEventListener('keydown', event => {
     playerZ = 3;
     playerX = roadCenterX(playerZ, features, seed);
   }
-  if (key === 'h' && terrainInfo) {
-    // Cycle: biome colors -> temperature map -> moisture map.
-    viewIndex = (viewIndex + 1) % VIEW_MODES.length;
-    terrainInfo.setView(VIEW_MODES[viewIndex]);
-  }
 });
 window.addEventListener('keyup', event => keys.delete(event.key.toLowerCase()));
 window.addEventListener('blur', () => keys.clear());
@@ -346,15 +369,17 @@ function animate() {
   const dt = Math.min(clock.getDelta(), 0.05);
   if (playing) {
     elapsed += dt;
-    // With a real song the journey runs in real time, so the world and the sound stay together;
-    // the demo (fake data) just strolls at a fixed pace.
-    const speed = audioBuffer ? WORLD.length / features.duration : DEMO_SPEED;
-    playerZ = Math.min(WORLD.length - 3, playerZ + dt * speed);
+    // The drive runs in real time, at a speed set by the song's tempo (see Timeline.js), so the world and the sound
+    // stay together.
+    playerZ = Math.min(WORLD.length - 3, playerZ + dt * features.timeline.speedAt(worldTime()));
   }
   updateCamera(dt);
   updateAtmosphere(dt);
   syncAudio();
-  const time = (playerZ / WORLD.length) * features.duration;
+  sun.position.set(playerX - 70, 120, playerZ + 40);
+  sun.target.position.set(playerX, 0, playerZ);
+  sunDisk.position.set(playerX + 95, 95, playerZ + 500);
+  const time = worldTime();
   const current = sampleAudioFeatures(features, time);
   timeLabel.textContent = formatTime(time);
   energyLabel.textContent = current.energy.toFixed(2);

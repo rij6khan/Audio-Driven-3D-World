@@ -1,7 +1,9 @@
 /**
  * Audio features for the world generators.
  *
- * Contract: { duration: seconds, samples: [{ time, volume, pitch, energy, spectrum }] }
+ * Contract: { duration: seconds, samples: [{ time, volume, pitch, energy, spectrum, ... }] }
+ *   Real-audio samples also carry `loudness` (dBFS, absolute) and `tempo` (BPM at that moment). FeatureShaper turns
+ *   loudness into `relief` (terrain height in world units); Timeline turns tempo into driving speed.
  *   volume, pitch, energy : numbers in [0, 1]
  *   spectrum              : array of SPECTRUM_BANDS numbers in [0, 1]: the power in each frequency band, in dB.
  *                           (0 = 80 dB or more below the loudest moment of the track, 1 = the loudest.)
@@ -61,7 +63,8 @@ export function makeFakeAudioFeatures(seed = 1, duration = 48, sampleRate = 0.25
       const lowBeat = upper ? 0 : beat * (1 - f) * 0.3;
       spectrum.push(round4(clamp(tilt + 0.14 * waveA + 0.12 * waveB + 0.2 * (volume - 0.5) + lowBeat, 0, 1)));
     }
-    samples.push({ time, volume, pitch, energy, spectrum });
+    const relief = 3 + Math.pow(volume, 1.55) * 23; // the demo's hill height, exactly as the terrain used to compute it
+    samples.push({ time, volume, pitch, energy, spectrum, relief, complexity: energy });
   }
   return { duration, samples };
 }
@@ -86,6 +89,12 @@ export function sampleAudioFeatures(features, time) {
     volume: lerp(a.volume, b.volume, f),
     pitch: lerp(a.pitch, b.pitch, f),
     energy: lerp(a.energy, b.energy, f),
+    // How busy the music is (0..1); features without it fall back to energy.
+    complexity: lerp(a.complexity ?? a.energy, b.complexity ?? b.energy, f),
+    // Hill height in world units. Features that haven't been shaped yet fall back to the original volume formula.
+    relief: a.relief !== undefined && b.relief !== undefined
+      ? lerp(a.relief, b.relief, f)
+      : 3 + Math.pow(lerp(a.volume, b.volume, f), 1.55) * 23,
   };
 }
 
@@ -182,9 +191,16 @@ export function analyzeSignal(signal, sampleRate, sampleInterval = 0.25) {
   const energy = volume.map((v, i) => clamp(0.7 * v + 0.3 * accent[i], 0, 1));
   const spectrum = bandPowerToUnitRange(bandPower);
 
-  const samples = times.map((time, i) => ({
-    time, volume: volume[i], pitch: pitch[i], energy: energy[i], spectrum: spectrum[i],
-  }));
+  // Rhythm: the tempo as it changes through the song (null when it can't be told).
+  const onsets = computeOnsetEnvelope(signal, sampleRate);
+  const tempo = estimateTempoTrack(onsets.envelope, onsets.fps, duration, times);
+
+  const samples = times.map((time, i) => {
+    const sample = { time, volume: volume[i], pitch: pitch[i], energy: energy[i], spectrum: spectrum[i], loudness: Math.round(loudnessDb[i] * 100) / 100 };
+    sample.complexity = Math.round(spectralOccupancy(spectrum[i], loudnessDb[i]) * 1000) / 1000;
+    if (tempo) sample.tempo = Math.round(tempo[i] * 10) / 10;
+    return sample;
+  });
   return { duration, samples };
 }
 
@@ -220,7 +236,7 @@ function createBandContext(sampleRate) {
   return {
     fft: createFFT(FFT_SIZE),
     hann,
-    filters: createBandFilters(sampleRate, FFT_SIZE),
+    filters: createBandFilters(sampleRate, FFT_SIZE, SPECTRUM_BANDS, bandAxisToHz),
     re: new Float64Array(FFT_SIZE),
     im: new Float64Array(FFT_SIZE),
   };
@@ -275,10 +291,9 @@ export function bandAxisToHz(p) {
 
 // Triangular filters evenly spaced along the warped band axis. Each filter's weights sum to 1, so a band is
 // the *average* power of its bins and wide high-frequency bands don't look louder than narrow low ones.
-function createBandFilters(sampleRate, fftSize) {
-  const bands = SPECTRUM_BANDS;
+function createBandFilters(sampleRate, fftSize, bands, axisToHz) {
   const edges = [];
-  for (let i = 0; i < bands + 2; i++) edges.push(bandAxisToHz(i / (bands + 1)));
+  for (let i = 0; i < bands + 2; i++) edges.push(axisToHz(i / (bands + 1)));
 
   const binHz = sampleRate / fftSize;
   const lastBin = fftSize / 2;
@@ -303,6 +318,126 @@ function createBandFilters(sampleRate, fftSize) {
     }
   }
   return filters;
+}
+
+/* ------------------------------------------------------------------------- *
+ * Rhythm: onset envelope -> tempo (BPM) over time
+ * ------------------------------------------------------------------------- */
+
+const ONSET_FFT = 1024;       // ~23 ms frames...
+const ONSET_HOP = 512;        // ...every ~11.6 ms
+const ONSET_BANDS = 24;
+const TEMPO_RANGE = [70, 160]; // BPM. Narrow enough that half/double-time can rarely both fit, so no folding is needed.
+const TEMPO_WINDOW = 8;       // seconds of music examined per estimate
+const TEMPO_STEP = 1;         // seconds between estimates
+const MIN_PULSE = 0.3;        // how strongly the beat must repeat to count; steadier than this is a beat, less is just texture
+
+// "How much new sound just started?" at ~86 frames per second: the sum of increases in each frequency band.
+function computeOnsetEnvelope(signal, sampleRate) {
+  const fps = sampleRate / ONSET_HOP;
+  const frames = Math.floor((signal.length - ONSET_FFT) / ONSET_HOP) + 1;
+  if (frames < 16) return { envelope: new Float32Array(0), fps };
+  const fft = createFFT(ONSET_FFT);
+  const hann = new Float64Array(ONSET_FFT);
+  for (let i = 0; i < ONSET_FFT; i++) hann[i] = 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / (ONSET_FFT - 1));
+  const filters = createBandFilters(sampleRate, ONSET_FFT, ONSET_BANDS, p => 50 * Math.pow(200, p)); // 50 Hz - 10 kHz
+  const re = new Float64Array(ONSET_FFT), im = new Float64Array(ONSET_FFT);
+  const db = new Float32Array(frames * ONSET_BANDS);
+  let maxDb = -Infinity;
+  for (let f = 0; f < frames; f++) {
+    for (let i = 0; i < ONSET_FFT; i++) { re[i] = signal[f * ONSET_HOP + i] * hann[i]; im[i] = 0; }
+    fft(re, im);
+    for (let b = 0; b < ONSET_BANDS; b++) {
+      const { start, weights } = filters[b];
+      let sum = 0;
+      for (let j = 0; j < weights.length; j++) sum += weights[j] * (re[start + j] * re[start + j] + im[start + j] * im[start + j]);
+      const v = 10 * Math.log10(sum + 1e-12);
+      db[f * ONSET_BANDS + b] = v;
+      if (v > maxDb) maxDb = v;
+    }
+  }
+  const floor = maxDb - 70; // ignore anything more than 70 dB below the loudest moment (noise floor)
+  const envelope = new Float32Array(frames);
+  for (let f = 1; f < frames; f++) {
+    let flux = 0;
+    for (let b = 0; b < ONSET_BANDS; b++) flux += Math.max(0, Math.max(floor, db[f * ONSET_BANDS + b]) - Math.max(floor, db[(f - 1) * ONSET_BANDS + b]));
+    envelope[f] = flux / ONSET_BANDS;
+  }
+  return { envelope, fps };
+}
+
+// Tempo (BPM) at each of `times`, or `null` if the audio is too short to tell.
+// A steady beat makes the onset envelope repeat every beat-length, which shows up as a peak when the envelope is
+// compared with a delayed copy of itself. For each stretch of music, the strongest such delay in range is the beat.
+function estimateTempoTrack(envelope, fps, duration, times) {
+  const total = envelope.length;
+  const window = Math.min(total, Math.round(TEMPO_WINDOW * fps));
+  if (total < fps * 4) return null;
+  // Keep only the pulses: subtract a ~0.8 s moving average so slow swells don't look like rhythm.
+  const half = Math.round(0.4 * fps);
+  const prefix = new Float64Array(total + 1);
+  for (let i = 0; i < total; i++) prefix[i + 1] = prefix[i] + envelope[i];
+  const pulses = new Float32Array(total);
+  for (let i = 0; i < total; i++) {
+    const lo = Math.max(0, i - half), hi = Math.min(total, i + half + 1);
+    pulses[i] = Math.max(0, envelope[i] - (prefix[hi] - prefix[lo]) / (hi - lo));
+  }
+  envelope = pulses;
+  const lagMin = Math.floor((fps * 60) / TEMPO_RANGE[1]);
+  const lagMax = Math.ceil((fps * 60) / TEMPO_RANGE[0]);
+
+  const steps = Math.floor(duration / TEMPO_STEP) + 1;
+  const logBpm = new Array(steps).fill(NaN);
+  for (let k = 0; k < steps; k++) {
+    const start = Math.max(0, Math.min(total - window, Math.round(k * TEMPO_STEP * fps - window / 2)));
+    let mean = 0;
+    for (let i = start; i < start + window; i++) mean += envelope[i];
+    mean /= window;
+    let variance = 0;
+    for (let i = start; i < start + window; i++) variance += (envelope[i] - mean) ** 2;
+    variance /= window;
+    let best = 0, bestR = 0;
+    for (let lag = lagMin; lag <= lagMax; lag++) {
+      let r = 0;
+      for (let i = start; i + lag < start + window; i++) r += (envelope[i] - mean) * (envelope[i + lag] - mean);
+      r /= (window - lag) * variance;                                              // 1 = perfectly repeating, 0 = no pattern
+      if (r > bestR) { bestR = r; best = lag; }
+    }
+    if (best && bestR >= MIN_PULSE) logBpm[k] = Math.log2((fps * 60) / best);
+  }
+  // Silent or beatless stretches have no answer: carry the nearest answer across them.
+  let last = logBpm.find(v => !Number.isNaN(v));
+  if (last === undefined) return null;
+  for (let k = 0; k < steps; k++) { if (Number.isNaN(logBpm[k])) logBpm[k] = last; else last = logBpm[k]; }
+
+  const smooth = gaussianSmoothArray(logBpm, 2); // ~2 s: the tempo may change, but the speed shouldn't jolt
+  return Float64Array.from(times, t => {
+    const p = Math.min(steps - 1, t / TEMPO_STEP), i = Math.floor(p), f = p - i;
+    return Math.pow(2, smooth[i] * (1 - f) + smooth[Math.min(steps - 1, i + 1)] * f);
+  });
+}
+
+// How much of the frequency range is in use: the share of bands within ACTIVE_DB of the loudest band.
+// One pure tone lights up a couple of bands; a dense full-band mix lights up most of them.
+const ACTIVE_DB = 24;
+function spectralOccupancy(spectrum, loudnessDb) {
+  if (loudnessDb < -50) return 0; // silence has no content, however flat its noise floor looks
+  const limit = Math.max(...spectrum) - ACTIVE_DB / SPECTRUM_DB_RANGE;
+  let active = 0;
+  for (const v of spectrum) if (v >= limit) active++;
+  return active / spectrum.length;
+}
+
+function gaussianSmoothArray(values, sigma) {
+  const radius = Math.ceil(3 * sigma);
+  const kernel = [];
+  let sum = 0;
+  for (let i = -radius; i <= radius; i++) { const w = Math.exp(-0.5 * (i / sigma) ** 2); kernel.push(w); sum += w; }
+  return values.map((_, i) => {
+    let acc = 0;
+    for (let j = -radius; j <= radius; j++) acc += kernel[j + radius] * values[Math.min(values.length - 1, Math.max(0, i + j))];
+    return acc / sum;
+  });
 }
 
 // Standard iterative radix-2 FFT, in place. `re`/`im` hold the real/imaginary parts.
