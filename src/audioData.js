@@ -97,7 +97,9 @@ export function sampleAudioFeatures(features, time) {
  *   2. analyzeSignal(...)       - pure math: raw numbers -> features object
  * ------------------------------------------------------------------------- */
 
-export async function makeAudioFeatures(file, sampleInterval = 0.25) {
+// Decode a file and analyze it. Returns the features for the world AND the decoded audio, so the page can
+// also play it back.
+export async function analyzeAudioFile(file, sampleInterval = 0.25) {
   const arrayBuffer = await file.arrayBuffer();
   // An OfflineAudioContext decodes audio without playing it (and without needing a click).
   const ctx = new OfflineAudioContext(1, 1, ANALYSIS_RATE);
@@ -107,7 +109,26 @@ export async function makeAudioFeatures(file, sampleInterval = 0.25) {
   } catch {
     throw new Error(`Couldn't decode "${file.name}". Try a .wav or .mp3 file.`);
   }
-  return analyzeSignal(toMono(audioBuffer), audioBuffer.sampleRate, sampleInterval);
+  return { features: analyzeSignal(toMono(audioBuffer), audioBuffer.sampleRate, sampleInterval), audioBuffer };
+}
+
+// Features only (the decoded audio is discarded).
+export async function makeAudioFeatures(file, sampleInterval = 0.25) {
+  return (await analyzeAudioFile(file, sampleInterval)).features;
+}
+
+// Is the audio essentially silent for `windowSeconds` starting at `time`? (RMS below about -60 dBFS.)
+export function isSilentAt(audioBuffer, time, windowSeconds = 1, threshold = 0.001) {
+  const rate = audioBuffer.sampleRate;
+  const start = Math.max(0, Math.floor(time * rate));
+  const end = Math.min(audioBuffer.length, Math.ceil((time + windowSeconds) * rate));
+  if (end <= start) return true; // past the end of the audio
+  let sumSquares = 0;
+  for (let c = 0; c < audioBuffer.numberOfChannels; c++) {
+    const data = audioBuffer.getChannelData(c);
+    for (let i = start; i < end; i++) sumSquares += data[i] * data[i];
+  }
+  return Math.sqrt(sumSquares / ((end - start) * audioBuffer.numberOfChannels)) < threshold;
 }
 
 function toMono(audioBuffer) {

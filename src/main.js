@@ -1,9 +1,10 @@
 import * as THREE from 'three';
-import { makeFakeAudioFeatures, sampleAudioFeatures, makeAudioFeatures } from './audioData.js';
+import { makeFakeAudioFeatures, sampleAudioFeatures, analyzeAudioFile, isSilentAt } from './audioData.js';
 import { createTerrain, VIEW_MODES } from './TerrainGenerator.js';
 import { createRoad, roadCenterX, roadHalfWidthX, WORLD } from './RoadGenerator.js';
 import { createScenery } from './PropGenerator.js';
 import { BIOMES, blendBiomeColor } from './BiomeGenerator.js';
+import { shapeFeatures } from './FeatureShaper.js';
 import './style.css';
 
 const app = document.querySelector('#app');
@@ -111,6 +112,132 @@ function buildWorld(newFeatures = makeFakeAudioFeatures(seed, 48, 0.25)) {
   }
 }
 
+/* --------------------------------- sound --------------------------------- */
+
+const DRIFT_LIMIT = 0.35;     // seconds the sound may drift from the playhead before it is re-synced
+const SILENCE_WINDOW = 1;     // seconds of upcoming audio checked when the user turns sound on
+const DEMO_SPEED = 3.4;       // world units per second when there is no real audio (the fake demo)
+
+let audioBuffer = null;       // the submitted file, decoded. null until a file is submitted
+let soundOn = false;
+let audioContext = null;
+let masterGain = null;
+let source = null;            // the currently playing AudioBufferSourceNode (they are single-use)
+let sourceGain = null;
+let sourceStartedAt = 0;      // audioContext time when `source` started
+let sourceOffset = 0;         // position in the file (seconds) where `source` started
+let scrubbing = false;        // true while the user holds forward/back, which moves the playhead far faster than real time
+
+// Find the button and message line in index.html if they exist; otherwise create them.
+const soundButton = document.querySelector('#sound-toggle') ?? (() => {
+  const b = document.createElement('button');
+  b.id = 'sound-toggle';
+  b.type = 'button';
+  b.className = 'secondary';
+  playButton.insertAdjacentElement('afterend', b);
+  return b;
+})();
+const caption = document.querySelector('#caption') ?? (() => {
+  const p = document.createElement('p');
+  p.id = 'caption';
+  p.setAttribute('role', 'status');
+  document.body.appendChild(p);
+  return p;
+})();
+
+let captionTimer = null;
+function showCaption(text, ms = 2800) {
+  caption.textContent = text;
+  caption.classList.add('visible');
+  clearTimeout(captionTimer);
+  captionTimer = setTimeout(() => caption.classList.remove('visible'), ms);
+}
+
+function updateSoundButton() {
+  soundButton.textContent = soundOn ? 'Sound on' : 'Sound off';
+  soundButton.setAttribute('aria-pressed', String(soundOn));
+  // Locked looks disabled but still receives clicks, so we can explain *why* it is locked.
+  soundButton.classList.toggle('locked', !audioBuffer);
+  soundButton.setAttribute('aria-disabled', String(!audioBuffer));
+}
+
+// Where the user is on the road, as a time in the song.
+function worldTime() { return (playerZ / WORLD.length) * features.duration; }
+
+function ensureAudioContext() {
+  if (!audioContext) {
+    audioContext = new AudioContext();
+    masterGain = audioContext.createGain();
+    masterGain.connect(audioContext.destination);
+  }
+  if (audioContext.state === 'suspended') audioContext.resume();
+  return audioContext;
+}
+
+function audioClock() { return sourceOffset + (audioContext.currentTime - sourceStartedAt); }
+
+// Start playing the file from `offset` seconds (replacing whatever was playing).
+function startAudioAt(offset) {
+  stopAudio();
+  const ctx = ensureAudioContext();
+  const node = ctx.createBufferSource();
+  const gain = ctx.createGain();
+  node.buffer = audioBuffer;
+  node.connect(gain);
+  gain.connect(masterGain);
+  const now = ctx.currentTime;
+  gain.gain.setValueAtTime(0, now);
+  gain.gain.linearRampToValueAtTime(1, now + 0.03); // tiny fade-in so starting mid-sound doesn't click
+  const start = THREE.MathUtils.clamp(offset, 0, Math.max(0, audioBuffer.duration - 0.05));
+  node.start(0, start);
+  node.onended = () => { if (source === node) { source = null; sourceGain = null; } };
+  source = node;
+  sourceGain = gain;
+  sourceStartedAt = now;
+  sourceOffset = start;
+}
+
+function stopAudio() {
+  if (!source) return;
+  const node = source, gain = sourceGain, now = audioContext.currentTime;
+  source = null;
+  sourceGain = null;
+  gain.gain.cancelScheduledValues(now);
+  gain.gain.setTargetAtTime(0, now, 0.01);          // quick fade-out so stopping doesn't click
+  node.onended = () => { node.disconnect(); gain.disconnect(); };
+  node.stop(now + 0.06);
+}
+
+// Called every frame: keep the sound exactly where the user is, and silent whenever it shouldn't play.
+function syncAudio() {
+  const t = worldTime();
+  const shouldPlay = soundOn && audioBuffer && playing && !scrubbing && !document.hidden
+    && playerZ < WORLD.length - 3.05                // the journey is over: don't loop the last moments
+    && t < audioBuffer.duration - 0.1;
+  if (!shouldPlay) { stopAudio(); return; }
+  if (!source || Math.abs(audioClock() - t) > DRIFT_LIMIT) startAudioAt(t);
+}
+
+function toggleSound() {
+  if (!audioBuffer) {
+    showCaption('Sound is disabled because no audio was submitted.');
+    return;
+  }
+  soundOn = !soundOn;
+  if (soundOn) {
+    ensureAudioContext(); // created inside the click, which is what lets the browser allow audio
+    if (isSilentAt(audioBuffer, worldTime(), SILENCE_WINDOW)) showCaption('This section is silent.');
+  } else {
+    stopAudio();
+  }
+  updateSoundButton();
+}
+
+soundButton.addEventListener('click', toggleSound);
+updateSoundButton();
+// A hidden tab stops animating, so stop the sound too; syncAudio restarts it at the right spot on return.
+document.addEventListener('visibilitychange', () => { if (document.hidden) stopAudio(); });
+
 /* ------------------------------ audio upload ------------------------------ */
 
 function setLoading(text) {
@@ -123,10 +250,13 @@ async function handleAudioFile(file) {
   if (!file) return;
   setLoading('Analyzing audio…');
   try {
-    const newFeatures = await makeAudioFeatures(file); // slow part: decode + spectrum
+    const { features: newFeatures, audioBuffer: newBuffer } = await analyzeAudioFile(file); // slow part: decode + spectrum
     setLoading(loadingDefaultText);
     await nextFrame();                                  // let the overlay paint before the heavy build
-    buildWorld(newFeatures);
+    buildWorld(shapeFeatures(newFeatures));            // smooth + rescale real-audio features to the demo's range and roughness
+    stopAudio();                                        // the new song replaces any sound that was playing
+    audioBuffer = newBuffer;                            // only after the world built, so a failure keeps the old audio
+    updateSoundButton();                                // unlocks the toggle (it stays Off until the user turns it on)
   } catch (err) {
     console.error(err);                                 // the old world stays on screen
     setLoading(`Couldn't use that file: ${err.message}`);
@@ -138,7 +268,7 @@ async function handleAudioFile(file) {
 }
 
 if (audioDropBox) {
-  // 'change' bubbles, so this works whether #new-audio is the file input itself or a wrapper around it.
+  // 'change' bubbles, so this works whether #audio-file is the file input itself or a wrapper around it.
   audioDropBox.addEventListener('change', event => {
     const input = event.target;
     handleAudioFile(input.files?.[0]).finally(() => { input.value = ''; }); // lets the same file be picked again
@@ -170,6 +300,7 @@ function updateAtmosphere(dt) {
 function updateCamera(dt) {
   const forward = (keys.has('w') || keys.has('arrowup') ? 1 : 0) - (keys.has('s') || keys.has('arrowdown') ? 1 : 0);
   const sideways = (keys.has('a') || keys.has('arrowright') ? 1 : 0) - (keys.has('d') || keys.has('arrowleft') ? 1 : 0);
+  scrubbing = forward !== 0;
   if (forward !== 0) playerZ = THREE.MathUtils.clamp(playerZ + forward * dt * 32, 2, WORLD.length - 3);
   if (sideways !== 0) playerX += sideways * dt * 25;
   const centerX = roadCenterX(playerZ, features, seed);
@@ -215,11 +346,14 @@ function animate() {
   const dt = Math.min(clock.getDelta(), 0.05);
   if (playing) {
     elapsed += dt;
-    // Fake playback advances along the world; it does not play actual sound.
-    playerZ = Math.min(WORLD.length - 3, playerZ + dt * 3.4);
+    // With a real song the journey runs in real time, so the world and the sound stay together;
+    // the demo (fake data) just strolls at a fixed pace.
+    const speed = audioBuffer ? WORLD.length / features.duration : DEMO_SPEED;
+    playerZ = Math.min(WORLD.length - 3, playerZ + dt * speed);
   }
   updateCamera(dt);
   updateAtmosphere(dt);
+  syncAudio();
   const time = (playerZ / WORLD.length) * features.duration;
   const current = sampleAudioFeatures(features, time);
   timeLabel.textContent = formatTime(time);
