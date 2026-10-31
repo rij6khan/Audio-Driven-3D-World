@@ -7,17 +7,32 @@
   </head>
   <body>
     <div id="app">
+      <button id="show-ui">Show UI</button>
       <div id="hud">
         <div class="eyebrow">PROCEDURAL AUDIO LANDSCAPE</div>
         <h1>Audio World</h1>
         <p class="subtitle">A landscape shaped by a simulated sound recording</p>
         <div class="stats">
-          <div><span class="stat-label">AUDIO TIME</span><strong id="time">00:00</strong></div>
+          <div><span class="stat-label">AUDIO TIME</span><strong id="time">00:00 / 00:00 </strong></div>
           <div><span class="stat-label">ENERGY</span><strong id="energy">0.00</strong></div>
         </div>
         <div class="controls">
           <button id="play-pause">Pause journey</button>
           <input type="file" accept="audio/*" id="audio-file">
+
+          <div class="volume-control">
+            <label for="volume-slider">Volume: </label>
+            <input
+              type="range"
+              id="volume-slider"
+              min="0"
+              max="100"
+              value="50"
+              step="1"
+            >
+            <span id="volume-value">50%</span>
+          </div>
+          <button id="toggle-ui">Hide UI</button>
         </div>
         <div class="legend">
           <div><span class="dot quiet"></span> Quiet audio: low terrain</div>
@@ -25,8 +40,13 @@
           <div><span class="dot road"></span> Pitch/energy variation: road bends</div>
         </div>
       </div>
-      <div id="help">Move: <b>WASD</b> or <b>↑ ↓ ← →</b> · Reset view: <b>R</b> · Rotating view: <b>Mouse click + drag</b></div>
-      <div id="loading">Generating your world…</div>
+      <div id="help">
+        Drive: <b>W</b> <b>S</b> <b>A</b> <b>D</b> or &uparrow; &downarrow; &middot; 
+        Look: <b>&leftarrow;</b> <b>&rightarrow;</b> or mouse click + drag &middot; 
+        Recenter view: <b>C</b> &middot; 
+        Restart: <b>R</b>
+    </div>
+    <div id="loading">Generating your world…</div>
     </div>
     <script type="module" src="/src/main.js"></script>
   </body>

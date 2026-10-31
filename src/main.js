@@ -14,6 +14,10 @@ const timeLabel = document.querySelector('#time');
 const energyLabel = document.querySelector('#energy');
 const playButton = document.querySelector('#play-pause');
 const audioDropBox = document.querySelector('#audio-file');
+const volumeSlider = document.querySelector('#volume-slider');
+const volumeValue = document.querySelector('#volume-value');
+const toggleUIButton = document.querySelector('#toggle-ui');
+const showUIButton = document.querySelector('#show-ui');
 const loadingDefaultText = loading.textContent;
 
 const scene = new THREE.Scene();
@@ -85,7 +89,7 @@ setAudioName(DEMO_NAME);
 
 // The on-screen controls, kept in step with what the keys actually do.
 const helpBox = document.querySelector('#help');
-if (helpBox) helpBox.innerHTML = 'Drive: <b>W/S</b> or \u2191\u2193 \u00b7 Look: <b>A/D</b> or \u2190\u2192 \u00b7 Recenter view: <b>C</b> \u00b7 Restart: <b>R</b>';
+//if (helpBox) helpBox.innerHTML = 'Drive: <b>W/S</b> or \u2191\u2193 \u00b7 Look: <b>A/D</b> or \u2190\u2192 \u00b7 Recenter view: <b>C</b> \u00b7 Restart: <b>R</b>';
 
 const seed = 1;
 let features;
@@ -182,6 +186,34 @@ let sourceGain = null;
 let sourceStartedAt = 0;      // audioContext time when `source` started
 let sourceOffset = 0;         // position in the file (seconds) where `source` started
 let scrubbing = false;        // true while the user holds forward/back, which moves the playhead far faster than real time
+let volume = 0.5;
+
+// adjusting volume
+volumeSlider.addEventListener('input', () => {
+  volume = Number(volumeSlider.value) / 100;
+  volumeValue.textContent = `${volumeSlider.value}%`;
+
+  if(masterGain && audioContext) {
+    masterGain.gain.setTargetAtTime(
+      volume,
+      audioContext.currentTime, 
+      0.01
+    );
+  }
+});
+
+// hide ui
+let uiHidden = false;
+function toggleUI() {
+  uiHidden = !uiHidden;
+
+  document.body.classList.toggle('ui-hidden', uiHidden);
+  toggleUIButton.textContent = uiHidden ? 'Show UI' : "Hide UI";
+}
+
+toggleUIButton.addEventListener('click', toggleUI);
+
+showUIButton.addEventListener('click', toggleUI);
 
 // Find the button and message line in index.html if they exist; otherwise create them.
 const soundButton = document.querySelector('#sound-toggle') ?? (() => {
@@ -223,6 +255,7 @@ function ensureAudioContext() {
   if (!audioContext) {
     audioContext = new AudioContext();
     masterGain = audioContext.createGain();
+    masterGain.gain.value = volume;
     masterGain.connect(audioContext.destination);
   }
   if (audioContext.state === 'suspended') audioContext.resume();
@@ -366,6 +399,8 @@ const LOOK_SPEED = 1.6;              // radians per second the view turns while 
 const LOOK_LIMIT = Math.PI * 0.9;    // how far round the driver can look
 let lookYaw = 0;                     // how far the view is turned from the road's direction (positive = right)
 const roadPoint = {};
+let cAngleX = 0;
+let cAngleY = 0;
 function updateCamera(dt) {
   const forward = (keys.has('w') || keys.has('arrowup') ? 1 : 0) - (keys.has('s') || keys.has('arrowdown') ? 1 : 0);
   const turn = (keys.has('d') || keys.has('arrowright') ? 1 : 0) - (keys.has('a') || keys.has('arrowleft') ? 1 : 0);
@@ -379,28 +414,6 @@ function updateCamera(dt) {
   // Heading is the road's, turned by the driver's head; the road's grade tilts the view less the further they look to the side.
   const heading = Math.atan2(road.tx, road.tz) - lookYaw;
   const pitch = Math.asin(road.ty) * Math.cos(lookYaw);
-  camera.lookAt(
-    road.x + Math.sin(heading) * Math.cos(pitch),
-    road.y + EYE_HEIGHT + Math.sin(pitch),
-    road.z + Math.cos(heading) * Math.cos(pitch),
-  );
-let cAngleX = 0;
-let cAngleY = 0;
-
-function updateCamera(dt) {
-  const forward = (keys.has('w') || keys.has('arrowup') ? 1 : 0) - (keys.has('s') || keys.has('arrowdown') ? 1 : 0);
-  const sideways = (keys.has('a') || keys.has('arrowright') ? 1 : 0) - (keys.has('d') || keys.has('arrowleft') ? 1 : 0);
-  if (forward !== 0) playerZ = THREE.MathUtils.clamp(playerZ + forward * dt * 32, 2, WORLD.length - 3);
-  if (sideways !== 0) playerX += sideways * dt * 25;
-  const centerX = roadCenterX(playerZ, features, seed);
-  const roadLimit = Math.max(0, roadHalfWidthX(playerZ, features, seed) - 0.25);
-  playerX = THREE.MathUtils.clamp(playerX, centerX - roadLimit, centerX + roadLimit);
-  const ground = terrainInfo.getHeight(playerX, playerZ) + 2.1;
-  const aheadZ = Math.min(WORLD.length, playerZ + 5);
-  const aheadX = roadCenterX(aheadZ, features, seed);
-  const target = new THREE.Vector3(aheadX, terrainInfo.getHeight(aheadX, aheadZ) + 2.2, aheadZ);
-  const desired = new THREE.Vector3(playerX, ground + 2.0, playerZ - 9);
-  camera.position.lerp(desired, 1 - Math.exp(-dt * 3.2));
   const sensitivity = 0.5;
   cAngleY -= mdX * sensitivity * dt;
   cAngleX -= mdY * sensitivity * dt;
@@ -410,8 +423,11 @@ function updateCamera(dt) {
 
   mdX = 0;
   mdY = 0;
-  
-  camera.lookAt(target);
+  camera.lookAt(
+    road.x + Math.sin(heading) * Math.cos(pitch),
+    road.y + EYE_HEIGHT + Math.sin(pitch),
+    road.z + Math.cos(heading) * Math.cos(pitch),
+  );
   camera.rotateY(cAngleY);
   camera.rotateX(cAngleX);
 }
@@ -431,7 +447,11 @@ window.addEventListener('keydown', event => {
     cAngleX = 0;
     cAngleY = 0;
   }
-  if (key === 'c') lookYaw = 0; // recenter the view along the road
+  if (key === 'c') {
+    lookYaw = 0; // recenter the view along the road
+    cAngleX = 0;
+    cAngleY = 0;
+  }
 });
 window.addEventListener('keyup', event => keys.delete(event.key.toLowerCase()));
 window.addEventListener('blur', () => keys.clear());
@@ -480,7 +500,7 @@ function animate() {
   sunDisk.position.set(playerX + 95, 95, playerZ + 500);
   const time = worldTime();
   const current = sampleAudioFeatures(features, time);
-  timeLabel.textContent = formatTime(time);
+  timeLabel.textContent = `${formatTime(time)} / ${formatTime(features.duration)}`;
   energyLabel.textContent = current.energy.toFixed(2);
   renderer.render(scene, camera);
 }

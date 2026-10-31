@@ -56,3 +56,67 @@ button.locked:hover { transform: none; background: rgba(255,255,255,.13); }
 
 /* The audio file's name in the HUD: one line, with an ellipsis if it is too long (the full name shows on hover). */
 #audio-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; font-weight: 500; }
+
+.volume-control {
+  display: flex;
+  align-items: center;
+  flex: 1 1 100%;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255,255,255,.15);
+  border-radius: 10px;
+  background: rgba(255,255,255,.07);
+}
+
+.volume-control label {
+  font: 600 11px 'DM Sans', sans-serif;
+  color: #c6d7d1;
+}
+
+#volume-slider {
+  flex: 1;
+  min-width: 0;
+  cursor: pointer;
+  accent-color: #c2f0d2;
+  pointer-events: auto;
+  position: relative;
+  z-index: 5;
+}
+
+#volume-value {
+  min-width: 35px;
+  text-align: right;
+  font: 500 11px 'DM Sans', sans-serif;
+  color: #c6d7d1;
+}
+
+/* Hide interface elements when immersive mode is enabled */
+.ui-hidden #hud,
+.ui-hidden #help,
+.ui-hidden #biome-badge,
+.ui-hidden #caption {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* Smooth fade animation */
+#hud,
+#help,
+#biome-badge,
+#caption {
+  transition: opacity 0.3s ease;
+}
+
+#show-ui {
+  display: none;
+  position: fixed;
+  top: 22px;
+  left: 22px;
+  z-index: 5;
+  width: auto;
+  flex: none;
+}
+
+.ui-hidden #show-ui {
+  display: block;
+}
