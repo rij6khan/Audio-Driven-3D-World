@@ -153,9 +153,9 @@ export function createScenery({ scene: parent, getTerrainHeight, biomeAt, biomeM
       const roadX = roadCenterX(z, features, seed);
       const info = biomeAt(roadX, z);
       if (!BIOMES[info.dominant].tree.dense || rng() > 0.92) continue;
-      // wide, flat clumps of leaves high above the road (above the driver's eye line), overlapping into a canopy
-      addPart(trees, sphereGeometry, leaf, roadX + (rng() - 0.5) * 10, info.height + 11 + rng() * 5, z + (rng() - 0.5) * 3,
-        8 + rng() * 4, 2.2 + rng(), 7 + rng() * 4);
+      // wide, flat clumps of leaves very high above the road, at the tops of the tall trees, overlapping into a canopy
+      addPart(trees, sphereGeometry, leaf, roadX + (rng() - 0.5) * 12, info.height + 30 + rng() * 10, z + (rng() - 0.5) * 3,
+        14 + rng() * 6, 3 + rng() * 1.5, 12 + rng() * 5);
     }
   }
 

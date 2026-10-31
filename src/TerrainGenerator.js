@@ -4,7 +4,7 @@ import { timeAtZ } from './Timeline.js';
 import { createNoise } from './noise.js';
 import { WORLD, createRoadProfile, roadCenterX } from './RoadGenerator.js';
 import {
-  BIOMES, createBiomeMap, biomeGroundColor, blendBiomeColor, smoothstep,
+  BIOMES, NIGHT, createBiomeMap, biomeGroundColor, blendBiomeColor, smoothstep,
 } from './BiomeGenerator.js';
 
 const WATER = {
@@ -27,9 +27,9 @@ const HORIZON = { reach: 1100, firstCell: 2.6, growth: 1.1, skirt: 12 };
 // The ground is graded to meet the road: level with the road out to `flat`, then blending back to the natural ground by `far`.
 const ROADBED = { flat: 6.5, far: 22 };
 
-export function createTerrain({ features, seed }) {
+export function createTerrain({ features, seed, calibration = null }) {
   const noise = createNoise(seed);
-  const biomeMap = createBiomeMap({ features, seed });
+  const biomeMap = createBiomeMap({ features, seed, calibration });
   const nx = WORLD.terrainSegmentsX;
   const nz = WORLD.terrainSegmentsZ;
   const cols = nx + 1;
@@ -181,6 +181,7 @@ export function createTerrain({ features, seed }) {
     const roadX = rowRoadX[iz];
     biomeMap.weightsAt(z, weights);   // the biome(s) here: it depends only on how far along the road we are
     const rowT = biomeMap.partAt(z).T;
+    const rowNight = biomeMap.nightAt(z); // and whether it is night there (the ground takes a cool tint)
     for (let ix = 0; ix < cols; ix++) {
       const i = iz * cols + ix;
       const x = (ix / nx - 0.5) * WORLD.width;
@@ -203,6 +204,7 @@ export function createTerrain({ features, seed }) {
         const k = 0.55 * Math.min(1, (scratch.level - y) / 1.2);
         for (let c = 0; c < 3; c++) accum[c] += (bed[c] - accum[c]) * k;
       }
+      if (rowNight > 0) for (let c = 0; c < 3; c++) accum[c] *= 1 + (NIGHT.tint[c] - 1) * rowNight;
       const shade = 0.88 + 0.12 * (0.5 + 0.5 * noise(x * 0.11, z * 0.11));
       colorsBiome[i * 3] = accum[0] * shade; colorsBiome[i * 3 + 1] = accum[1] * shade; colorsBiome[i * 3 + 2] = accum[2] * shade;
 
@@ -264,7 +266,7 @@ export function createTerrain({ features, seed }) {
     const first = farPositions.length / 3, width = xs.length;
     for (const z of zs) {
       biomeMap.weightsAt(z, weights);
-      const rowT = biomeMap.partAt(z).T;
+      const rowT = biomeMap.partAt(z).T, rowNight = biomeMap.nightAt(z);
       for (const x of xs) {
         const y = baseHeight(x, z), h01 = THREE.MathUtils.clamp((y - 1) / 45, 0, 1);
         accum[0] = accum[1] = accum[2] = 0;
@@ -273,6 +275,7 @@ export function createTerrain({ features, seed }) {
           biomeGroundColor(b, h01, rowT, ground);
           accum[0] += weights[b] * ground[0]; accum[1] += weights[b] * ground[1]; accum[2] += weights[b] * ground[2];
         }
+        if (rowNight > 0) for (let c = 0; c < 3; c++) accum[c] *= 1 + (NIGHT.tint[c] - 1) * rowNight;
         const shade = 0.88 + 0.12 * (0.5 + 0.5 * noise(x * 0.11, z * 0.11));
         farPositions.push(x, y, z);
         farColors.push(accum[0] * shade, accum[1] * shade, accum[2] * shade);

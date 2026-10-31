@@ -1,5 +1,6 @@
 import { WORLD } from './RoadGenerator.js';
 import { bandAxisToHz, SPECTRUM_DB_RANGE } from './audioData.js';
+import { DEFAULTS } from './Calibration.js';
 import { DRIVE } from './Timeline.js';
 
 /**
@@ -42,7 +43,8 @@ export const BIOME_CHOICE = {
   trebleDb: [-5, -26],         // energy above 4 kHz relative to all energy (dB)
   tonality: [0.25, 0.75],      // 0 = noise-like, 1 = one clear tone stands out (the average of the per-moment values)
   sustainDry: -0.20, sustainWet: -0.03, // low-half average level minus its own 95th-percentile level: at or below sustainDry (-16 dB, a very dynamic file) is the driest, at or above sustainWet (-2 dB, a steady, heavily compressed one) the wettest
-  mountainSpread: 25,                  // hills spanning at least this many height units (5th to 95th percentile) make it mountains
+  activityDb: 10,                      // night needs quiet AND calm: a steady, clear beat counts as this many dB louder (at full beat clarity)
+  nightCoolerBy: 0.06,                 // a night file triggers its biome at a temperature reading this much cooler than its day counterpart
   silenceDb: -50,                      // quieter than this isn't sound, and is left out of every average
 };
 
@@ -55,11 +57,24 @@ export const COMPILATION = {
   blendUnits: 30,        // road length over which one piece's biome hands over to the next
 };
 
+// Every biome has a night version, chosen by the same temperature and moisture as its day version (the temperature a little
+// cooler) but only for audio that is quieter overall. This is how night looks: the ground tinted cool, the sky and fog darkened
+// to deep blue, sunlight replaced by dim moonlight and weaker sky light.
+export const NIGHT = {
+  tint: [0.9, 0.96, 1.12],        // ground colors are multiplied by this
+  sky: [0.1, 0.13, 0.24],       // the biome's FOG color is multiplied by this (linear rgb)
+  deepSky: 0x03050f,            // the sky itself, behind the stars: nearly black, a hint of blue
+  moonColor: 0xa9bdf0, moonLight: 0.55,  // moonlight color, and its strength as a share of full sunlight
+  ambient: 0.7, exposure: 1.4,                 // sky light as a share of the day's
+  skyLight: 0x6577ad, groundLight: 0x2c3650,
+};
+
 /* ----------------------------- biome table ------------------------------ */
 // Anchors: T = temperature (0 cold .. 1 hot), M = moisture (0 dry .. 1 wet).
 // The last entry (mountains) is not on the grid: it takes over wherever the terrain is rugged.
 // Colors are sRGB hex. Tree shapes: 'cone' | 'round' | 'umbrella' | 'cactus' | 'shrub' | 'reed'.
-// Sunny biomes (steppe, temperate forest, desert) have no falling or suspended particles at all.
+// Sunny biomes (steppe, temperate forest, desert) have no falling or suspended particles at all. `canopy` (0..1) is how much
+// of the sky the forest cover hides (the rainforest's is nearly all of it).
 // `weather` (0..1 each, fog, sun and ambient are multipliers): snow, rain and dust set the falling particles; fog scales the
 // fog thickness; sun scales the sunlight (overcast < 1 < bright) and ambient the sky light (default 1).
 // Snow biomes (tundra, taiga) are winter-colored: snow-covered ground, frosted conifers; the tundra is also largely barren.
@@ -85,11 +100,11 @@ export const BIOMES = [
   { id: 'taiga', name: 'Taiga', T: 0.15, M: 0.5,
     ground: [0xe8eff2, 0xf4f8fa], water: 0x9bbccb, fog: 0xd2dde2, rock: 0x7a8187, rockDensity: 0.3,
     tree: { shape: 'cone', colors: [0xcfddda, 0xe9f0ef, 0x2c4d40, 0xbdd0cb], density: 0.9, size: [2.2, 4.8] },
-    weather: { snow: 0.8, rain: 0, dust: 0, fog: 1.3, sun: 0.8 } },
+    weather: { snow: 0.8, rain: 0, dust: 0, fog: 1.3, sun: 0.8, canopy: 0.3 } },
   { id: 'forest', name: 'Temperate forest', T: 0.5, M: 0.5,
     ground: [0x3f7d3f, 0x6e8c4b], water: 0x4f8fa8, fog: 0xbcd7d9, rock: 0x777d76, rockDensity: 0.4,
     tree: { shape: 'round', colors: [0x3c7a3c, 0x4f8f3a, 0x6aa03f, 0xc08a2e], density: 0.75, size: [2.0, 4.6] },
-    weather: { snow: 0, rain: 0, dust: 0, fog: 1.0, sun: 1.0 } },
+    weather: { snow: 0, rain: 0, dust: 0, fog: 1.0, sun: 1.0, canopy: 0.35 } },
   { id: 'savanna', name: 'Savanna', T: 0.85, M: 0.5,
     ground: [0xc9a94a, 0xa88b4a], water: 0x6da08c, fog: 0xeadcb4, rock: 0x9a8160, rockDensity: 0.5,
     tree: { shape: 'umbrella', colors: [0x7f8f34, 0x95a23c], density: 0.14, size: [2.8, 5.2] },
@@ -97,15 +112,15 @@ export const BIOMES = [
   { id: 'boreal-bog', name: 'Boreal bog', T: 0.15, M: 0.85,
     ground: [0x5e6e4a, 0x806a4f], water: 0x2f4a50, fog: 0xb4c2c6, rock: 0x6f777a, rockDensity: 0.25,
     tree: { shape: 'cone', colors: [0x2b4a3d, 0x34574a], density: 0.3, size: [1.4, 3.2] },
-    weather: { snow: 0.25, rain: 0.35, dust: 0, fog: 1.9, sun: 0.6 } },
+    weather: { snow: 0.25, rain: 0.35, dust: 0, fog: 1.9, sun: 0.6, canopy: 0.1 } },
   { id: 'marsh', name: 'Marsh', T: 0.5, M: 0.85,
     ground: [0x5f7a45, 0x7e8a50], water: 0x4d7048, fog: 0xb6c8b4, rock: 0x6f7468, rockDensity: 0.1,
     tree: { shape: 'reed', colors: [0xb8a864, 0x7e9a4a, 0x6a7f3c], density: 0.6, size: [1.6, 3.0] },
     weather: { snow: 0, rain: 0.3, dust: 0, fog: 1.7, sun: 0.8 } },
   { id: 'rainforest', name: 'Rainforest', T: 0.85, M: 0.85,
     ground: [0x123f1f, 0x1f5a2b], water: 0x24574a, fog: 0x5c8a6c, rock: 0x4a5a48, rockDensity: 0.15,
-    tree: { shape: 'round', colors: [0x145a28, 0x1c6e32, 0x104a22, 0x23803a], density: 1.0, size: [8, 16], dense: true },
-    weather: { snow: 0, rain: 1.0, dust: 0, fog: 1.9, sun: 0.3, ambient: 0.45 } },
+    tree: { shape: 'round', colors: [0x145a28, 0x1c6e32, 0x104a22, 0x23803a], density: 1.0, size: [34, 64], dense: true },
+    weather: { snow: 0, rain: 1.0, dust: 0, fog: 1.9, sun: 0.3, ambient: 0.45, canopy: 0.95 } },
   { id: 'mountains', name: 'Mountains', T: null, M: null,
     ground: [0x7d817a, 0x8d8178], water: 0x6fa0b8, fog: 0xc4d0d8, rock: 0x80868a, rockDensity: 1.0,
     tree: { shape: 'cone', colors: [0x264a3a, 0x30584a], density: 0.15, size: [1.4, 3.0], maxHeight: 35 }, // (no trees above the tree line)
@@ -139,13 +154,14 @@ export function biomeGroundColor(index, h01, T, out) {
 
 // Weighted average of the weather settings of every biome present: { snow, rain, dust, fog, sun }.
 export function blendBiomeWeather(weights, out = {}) {
-  out.snow = out.rain = out.dust = out.fog = out.sun = out.ambient = 0;
+  out.snow = out.rain = out.dust = out.fog = out.sun = out.ambient = out.canopy = 0;
   for (let i = 0; i < BIOMES.length; i++) {
     const w = weights[i];
     if (w < 0.002) continue;
     const wx = BIOMES[i].weather;
     out.snow += w * wx.snow; out.rain += w * wx.rain; out.dust += w * wx.dust; out.fog += w * wx.fog; out.sun += w * wx.sun;
     out.ambient += w * (wx.ambient ?? 1);
+    out.canopy += w * (wx.canopy ?? 0);
   }
   return out;
 }
@@ -248,9 +264,9 @@ function describeSpectrum(sound, bands) {
 }
 
 // Temperature, moisture and hill range of the sound between two times, and the biome they point to.
-function chooseBiome(samples, from, to) {
+function chooseBiome(samples, from, to, calibration) {
   const sound = samples.filter(s => s.time >= from && s.time < to && !silent(s));
-  if (!sound.length) return { biome: 0, T: 0.5, M: 0.5, spread: 0, sustain: 0, cues: {}, scores: [] };
+  if (!sound.length) return { biome: 0, night: false, T: 0.5, M: 0.5, spread: 0, sustain: 0, level: -18, cues: {}, scores: [] };
   const bands = sound[0].spectrum.length, half = Math.floor(bands / 2);
   const level = (s, from, to) => { let sum = 0; for (let b = from; b < to; b++) sum += s.spectrum[b]; return sum / (to - from); };
   const lows = sound.map(s => level(s, 0, half));
@@ -260,6 +276,10 @@ function chooseBiome(samples, from, to) {
   // Moisture: the low half's average level against its own peaks.
   const sustain = mean(lows) - sorted[Math.floor(0.95 * (sorted.length - 1))];
   const M = clamp((sustain - BIOME_CHOICE.sustainDry) / (BIOME_CHOICE.sustainWet - BIOME_CHOICE.sustainDry), 0, 1);
+  // For deciding the biome, the readings are not clamped to 0..1 (a gentle slope carries on past the ends), so files that
+  // overshoot a scale still keep their order instead of piling up on one value and tying at a cut point.
+  const soft = x => (x < 0 ? 0.1 * x : x > 1 ? 1 + 0.1 * (x - 1) : x);
+  const moisture = soft((sustain - BIOME_CHOICE.sustainDry) / (BIOME_CHOICE.sustainWet - BIOME_CHOICE.sustainDry));
 
   // Temperature: four cues from the file's long-term average spectrum, each scored 0 (cold) to 1 (warm) on its own
   // fixed physical scale, then averaged.
@@ -272,22 +292,31 @@ function chooseBiome(samples, from, to) {
     score(cues.tonality, BIOME_CHOICE.tonality),
   ];
   const T = scores.reduce((a, v) => a + v, 0) / scores.length;
+  const open = (value, [cold, warm]) => soft((value - cold) / (warm - cold));
+  const warmth = (open(Math.log2(cues.centroidHz), BIOME_CHOICE.centroidHz.map(Math.log2)) + open(cues.slope, BIOME_CHOICE.slopeDbPerOct)
+    + open(cues.trebleDb, BIOME_CHOICE.trebleDb) + open(cues.tonality, BIOME_CHOICE.tonality)) / 4;
 
   const heights = sound.map(s => s.relief ?? 0).sort((a, b) => a - b);
   const spread = heights[Math.floor(0.95 * (heights.length - 1))] - heights[Math.floor(0.05 * (heights.length - 1))];
-  if (spread >= BIOME_CHOICE.mountainSpread) return { biome: MOUNTAIN, T, M, spread, sustain, cues, scores };
+  const overall = mean(sound.map(s => s.loudness ?? -18)); // overall loudness, dBFS (the demo has none, and counts as day)
 
-  let best = 0, bestDistance = Infinity;
-  for (let i = 0; i < MOUNTAIN; i++) {
-    const d = (T - BIOMES[i].T) ** 2 + (M - BIOMES[i].M) ** 2;
-    if (d < bestDistance) { bestDistance = d; best = i; }
-  }
-  return { biome: best, T, M, spread, sustain, cues, scores };
+  // Which cell of the 3 x 3 grid (temperature across, moisture down) the file falls in. The cut points come from the
+  // library of files seen so far, so every cell fills about evenly (see Calibration.js); the defaults are plain terciles.
+  const activity = mean(sound.map(s => s.pulse ?? 0)); // beat clarity, 0 (no clear beat) .. 1 (steady, driving beat)
+  const night = overall + BIOME_CHOICE.activityDb * activity < (calibration ? calibration.nightLevel() : DEFAULTS.nightLevel);
+  const reading = warmth + (night ? BIOME_CHOICE.nightCoolerBy : 0); // night triggers at a slightly cooler reading
+  const tCuts = calibration ? calibration.temperatureCuts() : DEFAULTS.temperatureCuts;
+  const column = reading < tCuts[0] ? 0 : reading < tCuts[1] ? 1 : 2;
+  const mCuts = calibration ? calibration.moistureCuts(column) : DEFAULTS.moistureCuts[column];
+  const row = moisture < mCuts[0] ? 0 : moisture < mCuts[1] ? 1 : 2;
+
+  const mountainous = spread >= (calibration ? calibration.mountainSpread() : DEFAULTS.mountainSpread);
+  return { biome: mountainous ? MOUNTAIN : row * 3 + column, night, T, M, warmth, reading, moisture, spread, sustain, level: overall, activity, cues, scores };
 }
 
 /* ------------------------------ the biome map ------------------------------ */
 
-export function createBiomeMap({ features, seed = 1 }) {
+export function createBiomeMap({ features, seed = 1, calibration = null }) {
   const samples = ensureSpectrum(features.samples);
   const N = samples.length;
   const B = samples[0].spectrum.length;
@@ -298,7 +327,7 @@ export function createBiomeMap({ features, seed = 1 }) {
 
   // The file's biome(s), and where along the road each applies.
   const zOf = t => (features.timeline ? features.timeline.zAt(t) : (t / duration) * WORLD.length);
-  const parts = findParts(samples, duration).map(p => ({ ...p, ...chooseBiome(samples, p.from, p.to), zFrom: zOf(p.from), zTo: zOf(p.to) }));
+  const parts = findParts(samples, duration).map(p => ({ ...p, ...chooseBiome(samples, p.from, p.to, calibration), zFrom: zOf(p.from), zTo: zOf(p.to) }));
 
   // Biome weights at road position z (a single 1, except in the short handover between two pieces of a compilation).
   // Returns the index of the strongest biome.
@@ -357,7 +386,9 @@ export function createBiomeMap({ features, seed = 1 }) {
     return out;
   }
 
-  return { fieldsAt, weightsAt, partAt, parts, hasMountains, mountainAt };
+  // How much of the road at z is night (0..1; fractional only in the short handover between pieces of a compilation).
+  const nightAt = z => { let w = 0; parts.forEach((p, k) => { if (p.night) w += partWeight(k, z); }); return w; };
+  return { fieldsAt, weightsAt, partAt, parts, hasMountains, mountainAt, nightAt };
 }
 
 /* -------------------------------- helpers ------------------------------- */
